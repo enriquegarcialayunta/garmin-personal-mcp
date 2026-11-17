@@ -1,0 +1,244 @@
+import { addDays } from "../../dates";
+import { type Activity, groupOf, mondayOf } from "../../analytics/calc";
+import type { Totals } from "../../analytics/metrics";
+import { h } from "../dom";
+import { en } from "../i18n/en";
+import type { Key, T } from "../i18n";
+import { icon } from "../icons";
+import type { Ctx } from "../registry";
+import { store } from "../theme";
+
+/** Small building blocks that the built-in widgets share. */
+
+/** The name of a board in the page language; every SDK sport has a text, so the key shows only for unknown data. */
+export const typeName = (t: T, g: string) => (`type.${g}` in en ? t(`type.${g}` as Key) : g);
+
+/** A word from Garmin: its text when the catalogue knows it, else Garmin's word. */
+export function garminWord(
+  ctx: Ctx,
+  group: "hrvStatus" | "lapType" | "teLabel",
+  word: string,
+): string {
+  const key = `${group}.${word}`;
+  return key in en ? ctx.t(key as Key) : word.replaceAll("_", " ");
+}
+
+/** A formatted value with its unit, e.g. "12.3 km"; the missing-value text alone when there is no value. */
+export const withUnit = (ctx: Ctx, text: string, unit: string) =>
+  text === ctx.fmt.na ? text : `${text}${unit}`;
+
+/** A KPI tile: label, big value, and an optional line under it. */
+export function kpi(
+  label: string,
+  value: string,
+  ...sub: (Node | string | false | undefined)[]
+): HTMLElement {
+  return h(
+    "div",
+    { class: "kpi" },
+    h("div", { class: "kpi-label" }, label),
+    h("div", { class: "kpi-value" }, value),
+    ...sub.map((s) => s && h("div", { class: "kpi-sub" }, s)),
+  );
+}
+
+export const kpiRow = (...tiles: HTMLElement[]) => h("div", { class: "kpis" }, ...tiles);
+
+/**
+ * "Show all" for a long widget: `extra` stays hidden until the button opens it, without drawing the
+ * page again. The choice stays in this browser, for each board and widget.
+ */
+export function showAll(ctx: Ctx, extra: HTMLElement[], total: number): HTMLElement | false {
+  if (extra.length === 0) return false;
+  const key = `garmin-open:${ctx.board}:${ctx.id}`;
+  const ids = extra.map((el, i) => (el.id ||= `open-${ctx.board}-${ctx.id}-${i}`));
+  const button = h("button", { class: "btn more", "aria-controls": ids.join(" ") });
+  const set = (open: boolean) => {
+    for (const el of extra) el.hidden = !open;
+    button.setAttribute("aria-expanded", String(open));
+    button.textContent = open ? ctx.t("act.less") : ctx.t("act.more", { n: total });
+  };
+  button.addEventListener("click", () => {
+    const open = button.getAttribute("aria-expanded") !== "true";
+    set(open);
+    if (open) store.set(key, "1");
+    else store.remove(key);
+  });
+  set(store.get(key) === "1");
+  return button;
+}
+
+/**
+ * A change in %, or in points for a metric that is itself a percent, with an arrow. Only a metric
+ * where one direction is better (HRV up, resting HR down) is green or red, with "better" or "worse"
+ * for screen readers; a change of volume is neither.
+ */
+export function delta(
+  ctx: Ctx,
+  pct: number | null,
+  better?: "up" | "down",
+  points = false,
+): HTMLElement {
+  // no base to compare with (e.g. no sessions before) is not missing data: show nothing
+  if (pct === null) return h("span", {});
+  const cls = better ? ctx.calc.changeClass(pct, better === "up") : "same";
+  const flat = Math.abs(pct) < 0.5;
+  return h(
+    "span",
+    { class: `delta ${better ? cls : ""}` },
+    flat ? "" : pct > 0 ? "▲ " : "▼ ",
+    points
+      ? ctx.t("delta.points", { n: ctx.fmt.num(Math.abs(pct), 0) })
+      : ctx.fmt.pct(Math.abs(pct)).replace("+", ""),
+    cls !== "same" && h("span", { class: "sr-only" }, ` (${ctx.t(`delta.${cls}`)})`),
+  );
+}
+
+/**
+ * The last 7 days against the mean week of the 4 before them. Nothing when the base is empty or starts
+ * before the data: part of 4 weeks divided by 4 reads as a rise.
+ */
+export function vsFourWeeks(
+  ctx: Ctx,
+  now: number,
+  before: number,
+  end: string,
+  label: Key,
+): HTMLElement | false {
+  const pct = ctx.calc.fourWeekChange(now, before, end, ctx.data.prevStart);
+  return pct !== null && h("span", {}, delta(ctx, pct), " ", ctx.t(label));
+}
+
+/** A table; numeric columns align right. */
+export function table(
+  head: string[],
+  rows: (Node | string)[][],
+  numeric: number[] = [],
+): HTMLElement {
+  const cls = (i: number) => (numeric.includes(i) ? "num" : undefined);
+  return h(
+    "table",
+    { class: "data" },
+    h("thead", {}, h("tr", {}, ...head.map((x, i) => h("th", { class: cls(i), scope: "col" }, x)))),
+    h(
+      "tbody",
+      {},
+      ...rows.map((r) => h("tr", {}, ...r.map((c, i) => h("td", { class: cls(i) }, c)))),
+    ),
+  );
+}
+
+/** How many rows of a list show before "Show all", on every board. */
+export const LIST_ROWS = 10;
+
+/** The first LIST_ROWS items stay in view; the button opens the others. */
+export const showRest = (ctx: Ctx, items: HTMLElement[]) =>
+  showAll(ctx, items.slice(LIST_ROWS), items.length);
+
+/** A table with a row for each session, for any board: spread it into `append`. */
+export function sessionTable(
+  ctx: Ctx,
+  ...args: Parameters<typeof table>
+): [HTMLElement, HTMLElement | false] {
+  const tbl = table(...args);
+  return [tbl, showRest(ctx, [...tbl.querySelectorAll<HTMLElement>("tbody tr")])];
+}
+
+/** The type of an activity with its icon (decorative) and label. */
+export function typeCell(ctx: Ctx, a: Activity): HTMLElement {
+  const g = groupOf(a);
+  return h("span", { class: `type type-${g}` }, icon(g), typeName(ctx.t, g));
+}
+
+/** A week label; the last week is marked with * while it is in progress. */
+export function weekLabel(ctx: Ctx, monday: string): string {
+  const open =
+    monday === mondayOf(ctx.data.end) && new Date(`${ctx.data.end}T00:00:00Z`).getUTCDay() !== 0;
+  return `${ctx.fmt.day(monday)}${open ? "*" : ""}`;
+}
+
+/** The last day of the window: Sunday of its last week, or the end of the data. */
+export function windowEnd(ctx: Ctx): string {
+  const sunday = addDays(ctx.to, 6);
+  return sunday < ctx.data.end ? sunday : ctx.data.end;
+}
+
+/** The two ends of a date range; the first has no year when both ends are in the same year. */
+export function rangeDays(
+  fmt: Pick<Ctx["fmt"], "day" | "longDay">,
+  from: string,
+  to: string,
+): readonly [string, string] {
+  return [from.slice(0, 4) === to.slice(0, 4) ? fmt.day(from) : fmt.longDay(from), fmt.longDay(to)];
+}
+
+/** Every activity the page has: this period and the one before (compact, for comparisons). */
+export function everyActivity(ctx: Ctx): Activity[] {
+  return [...ctx.data.activities, ...ctx.data.previousActivities];
+}
+
+/** Activities of a type ("all" for every type) between two days. */
+export function between(
+  acts: Activity[],
+  from: string,
+  to: string,
+  type: string = "all",
+): Activity[] {
+  return acts.filter((a) => {
+    const d = typeof a.start === "string" ? a.start.slice(0, 10) : "";
+    return d >= from && d <= to && (type === "all" || groupOf(a) === type);
+  });
+}
+
+export type { Totals };
+
+/** The max HR of the default zones, for estimated loads. */
+export const maxHR = (ctx: Ctx) => ctx.calc.zonesOf(ctx.data.zones).maxHR;
+
+export const totals = (ctx: Ctx, acts: Activity[]): Totals => ctx.calc.totalsOf(acts, maxHR(ctx));
+
+/** The load of a total; n/a when there are sessions and none of them has a load. */
+export const loadText = (ctx: Ctx, t: Totals) =>
+  t.sessions > 0 && t.loadKnown === 0 ? ctx.fmt.na : ctx.fmt.num(t.load);
+
+/** A colour with alpha, from a theme token in #rrggbb. */
+export function alpha(color: string, a: number): string {
+  return /^#[0-9a-f]{6}$/i.test(color)
+    ? `${color}${Math.round(a * 255)
+        .toString(16)
+        .padStart(2, "0")}`
+    : color;
+}
+
+/** Buttons that pick one option of a widget; the choice stays while the page is open. */
+const choices = new Map<string, string>();
+export function picker(
+  ctx: Ctx,
+  name: string,
+  options: [value: string, label: string][],
+  label: string,
+): [string, HTMLElement] {
+  const key = `${ctx.board}/${ctx.id}/${name}`;
+  const value = choices.get(key) ?? options[0][0];
+  const bar = h(
+    "div",
+    { class: "picker", role: "group", "aria-label": label },
+    ...options.map(([v, text]) =>
+      h(
+        "button",
+        {
+          class: "chip small",
+          "aria-pressed": String(v === value),
+          onclick: () => {
+            choices.set(key, v);
+            ctx.refresh();
+          },
+        },
+        text,
+      ),
+    ),
+  );
+  return [value, bar];
+}
+
+export const note = (text: string) => h("p", { class: "muted small note" }, text);

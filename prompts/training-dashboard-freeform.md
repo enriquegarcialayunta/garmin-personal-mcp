@@ -1,0 +1,387 @@
+You are a data-minded endurance coach and a front-end designer. Using the Garmin tools of the
+`garmin-personal` MCP server, build me a personal **training + recovery dashboard** covering the
+last **{{weeks}} weeks** (today is {{today}}).
+
+The point of this dashboard is what social training apps do not show: how training load and
+recovery (HRV, sleep, resting heart rate, body battery) move together. Answer in my language.
+
+## Workout comparison
+
+First call `writeDashboard` with `preview` = true and `weeks` = {{weeks}}. It writes no page file.
+If `repeatedRuns` of its `digest` is not empty, ask me one question before you design the page:
+whether to compare those workouts across weeks. Name them with their number of runs. If your client
+has a tool for questions with choices, use it: "No" (default) and "Yes, compare them across weeks".
+Say that a yes adds a Workout trend section, and that the page then downloads the laps of the last 8
+runs of each workout, once: this build takes longer. On a yes:
+
+- Put this line first in the first inline script of the page:
+  `window.GARMIN_SETTINGS = /* garmin-settings:start */null/* garmin-settings:end */;`
+- In the first `writeDashboard` call that writes the page, give `settings` = { "workouts": true }.
+  The page keeps it, so its updates load the laps too.
+- Add the Workout trend section to the Run board (below).
+
+## Recovery trend
+
+After that question, ask whether to add a Recovery trend. Options "No" (default) and "Yes, add the
+Recovery trend". Say that a yes adds a section with the weekly average of sleep, sleep score and
+resting HR for the whole period, and that the page file then holds these values for each day: this
+matters for a page that I share. On a yes:
+
+- Put the settings line of the Workout comparison first in the first inline script of the page,
+  once.
+- In the first `writeDashboard` call that writes the page, give `settings` with
+  `"recoveryHistory": true`, next to `"workouts": true` when I also said yes to that. The page
+  keeps it.
+- Add the Recovery trend to the Recovery board (below).
+
+## 1. The data
+
+You design the page; the server puts the data into it. The page reads the data as `DATA`: the result
+of `getDashboardData` with `weeks` = {{weeks}}, which has:
+
+- `zones`: my HR zones. `fitnessAge`: Garmin's fitness age.
+- `activities`: the activities from {{startDate}} to {{today}}, most recent first, as compact
+  summaries. The 30 most recent strength activities, and older ones whose .FIT file is saved, have
+  `exercises`: sets, rest, and the primary and secondary muscles of each exercise. A strength
+  activity without `exercises` has no sets: leave its week out of set counts and say so. The 3 most recent activities, every race, every run over 15 km and
+  every run whose name repeats have `laps` (km splits, intervals, warm-up and cool-down).
+- `previousActivities`: the activities from {{prevStartDate}} to {{prevEndDate}}, with the fields
+  for the period comparison.
+- `hrv`: one row for each night: `hrv`, `weeklyAvg`, `status`, and the balanced range `low` to
+  `high`.
+- `recovery`: one row for each of the last 14 days: sleep hours (`sleepH`, and `deep`, `light`,
+  `rem`, `awake`), `sleepScore`, sleep need `needH`, bedtime `bedMin` (minutes after midnight),
+  `rhr`, body battery `bbHigh` and `bbLow`, `stress`, `steps`, `stepGoal`, `floors`. With
+  `recoveryHistory`, the rows cover the whole period: a row older than the last 14 days has only
+  `date`, `sleepH`, `sleepScore` and `rhr`, so a panel of the last 14 days uses the last 14 rows.
+- `sync`: what the server fetched. The server keeps a local cache and asks Garmin only for the new
+  days. If `failedDays` is more than 0, name the dates in `failedDates` in chat. If
+  `failedSections` is not empty, name those sections in chat. `zones` and `units` then hold the
+  last saved values, if there are any, else `zones` is null and `units` is absent. `fitnessAge` is
+  then null and `hrv` can have no rows. A widget without its value shows "n/a". If `failedDetails` is
+  more than 0, say that this many sessions have no laps or sets, so the strength and lap numbers are
+  not complete. If `stoppedEarly` is true, say that Garmin stopped answering (a rate limit or the
+  network), and that I can run the update again in a few minutes.
+- `notes`: the coach notes, a list of strings. The server escapes them as HTML.
+- `units`: the measurement system of my Garmin profile. The data is always metric (km, m, kg,
+  pace per km). Show every distance, pace, speed, elevation and weight in my units: `metric` km,
+  /km, km/h, m, kg; `statute_us` mi, /mi, mph, ft, lb; `statute_uk` mi, /mi, mph, m, lb. Without
+  `units`, use metric. Race names (5 km, 10 km, half marathon) stay as they are.
+
+You do not need to call `getDashboardData`: the field names above are all the page needs.
+
+Garmin's Personal API has no VO2 max, training status or readiness, race predictor, personal
+records, weight or gear data. Do not look for them. Where this prompt tells you, the dashboard
+calculates its own versions and labels them as estimates.
+
+A widget without its data shows "n/a". **Never invent, interpolate or estimate missing values.**
+
+## 2. Compute
+
+Group every activity into one type by its `sport` field, the sport name of the Garmin FIT SDK.
+Two Garmin `type` keys are exceptions: their sport does not fit their type.
+
+| Type | Activities |
+|---|---|
+| Run | `sport` is `running` |
+| Strength | `type` is `strength_training` (its `sport` is `training` or `fitnessEquipment`) |
+| Walk | `sport` is `walking` |
+| Hike | `sport` is `hiking` |
+| Bike | `sport` is `cycling` |
+| Swim | `sport` is `swimming` |
+| Racket sports | `sport` is `racket`, or `type` is `pickleball` |
+| Each other sport | one more type for each other `sport`, named from it: `alpineSkiing` is "Alpine skiing" |
+| Other | no `sport` field; in chat, name the `type` keys that are in this group |
+
+Indoor and outdoor: `indoor_cycling`, `virtual_ride`, `treadmill_running` and `indoor_rowing` are
+indoor. All other keys are outdoor.
+
+- **Session time**: `duration` is moving time. Strength and racket sports have little moving time, so use
+  `elapsed` for them when it is present. Run, Walk and Bike use `duration`.
+- **Weekly volume** for each type: distance (km), time, number of sessions.
+- **The last 7 days compared with the 4-week average before them** for distance, time and
+  sessions (difference in %).
+- **Training load** of each activity = Garmin's `trainingLoad`. Only when it is missing, use
+  moving minutes x avg HR / max HR (from the zones), and label it an *estimate* where you show it.
+  Then calculate the acute (7-day) to chronic (28-day) load ratio, and highlight the 0.8-1.3 band.
+- **Running**: average pace and average HR for each week, and efficiency (metres per heartbeat =
+  speed in m/min / avg HR) to show aerobic progress. Best efforts in the period: the fastest of
+  each `best` distance (1k, mile, 5k, 10k, half, marathon), with its date and activity. Races
+  (`race: true`). For each week, the share of HR-zone time in Z1-2 (easy) and Z4-5 (hard). Also
+  the weekly running form averages (cadence, `strideCm`, `gctMs`, `vertOscCm`, `vertRatioPct`,
+  `avgPowerW`, `normPowerW`), only for the metrics that are present. Run Walk Run sessions
+  (`runWalk`): the pace of the run segments against the overall pace, and the walk time. Aerobic
+  and anaerobic training effect for each run, and label counts for each week.
+- **Per type**, for the type tabs: sessions, total and average moving time, average and max HR,
+  share of the total load. Add distance and pace for Run and Walk, and distance, average speed
+  (km/h) and ascent for Bike. Strength and racket sports have no useful distance or pace. Do not show them,
+  also when Garmin records a few metres.
+- **Strength, per exercise** (group the sets by the `exercise` name across sessions): sessions,
+  last date, total sets and reps. For each session: the top set (heaviest weight, with its reps),
+  the volume (sum of kg x reps) and the estimated 1RM of the best set. Use Epley: kg x (1 + reps /
+  30), only for sets of 1-12 reps, and label it an *estimate*. Exercises with reps but no kg: max
+  reps in a set and total reps. Timed exercises (no reps): longest set in seconds. For each
+  exercise, the change of the top set and of the estimated 1RM from its first to its last session
+  in the period. Weekly completed sets for each movement `category` (Bench Press, Curl, Squat...).
+  A set with 0 reps was not completed: list it, but do not use it in any number.
+- **Time in HR zones** for each week and each type, from the `hrZonesSec` of each activity. Only
+  for an activity without it: put all its minutes in the zone of its average HR, and label it
+  *approximate*.
+- **Recovery**: nightly HRV vs. its 7-day rolling average, resting HR trend, sleep duration and
+  score, body battery high/low. Sleep need against actual sleep for each night
+  (`needH`), bedtime regularity (the spread of `bedMin`), sleep
+  stages.
+- **Period comparison**: these {{weeks}} weeks against the previous {{weeks}}
+  (`previousActivities`). Show km, time, load and sessions, in total and for each type, with the
+  difference in %.
+- **Load safety**: the weekly load ramp (% against the previous week; flag it above +10%). For the
+  last 7 days: monotony = mean daily load / standard deviation of daily load (a rest day counts as
+  0; flag it above 2.0), and strain = weekly load x monotony (Foster). Label them *estimates*.
+- **Readiness today** (the dashboard's own heuristic, not Garmin's): last night's HRV status, sleep
+  score, resting HR against its average of the 7 days before today, and the load ratio. The verdict
+  is "go easy" if HRV is low, the sleep score is under 60, or resting HR is 5+ bpm above its
+  average. It is "ready to push" if HRV is balanced, the sleep score is 80+ and the load ratio is
+  under 1.3. Otherwise it is "normal". Show the four inputs next to the verdict.
+- **Intensity minutes** for each week = the sum of `moderateMinutes` + 2 x `vigorousMinutes` of
+  the activities of that week. Compare it with the guideline of 150 min/week. Say that it counts
+  only activities, not all-day minutes.
+- **Records in the period**: best efforts, longest run, longest ride, heaviest top set and best
+  estimated 1RM for each exercise, each with its date. Show them as badges.
+- **Run extras**: a race predictor from the best effort that gives the fastest prediction. Use
+  Riegel: T2 = T1 x (D2 / D1)^1.06, only with best efforts of 5 km or longer, and label it an
+  *estimate*. The long run share of the km of each week (flag it above 35%). The pace split of
+  each race and long run from its laps: first half and second half pace (even, negative or
+  positive split). The grade-adjusted pace (`gap`) next to the pace, and the ascent for each week.
+- **Strength extras**: the muscle group of each exercise, from the group of its first primary
+  muscle. Groups: Chest = Chest; Back = Lats, Traps, Lower Back; Shoulders; Biceps; Triceps;
+  Forearms = Forearm; Quads; Hamstrings; Glutes; Calves; Abs = Abs, Obliques; Hips = Hips,
+  Abductors, Adductors; Other = no muscle data. For each group, the completed sets per week: a set
+  counts 1 for each primary muscle group and 0.5 for each secondary one. Compare the average
+  weekly sets of each group with the usual range of 10-20 sets/week. Give the push:pull ratio:
+  Chest, Shoulders and Triceps against Back and Biceps. The rest between sets for each exercise
+  (median `restSec`). The weight of each set as a % of the best estimated 1RM of that exercise.
+- **Walk / Hike**: daily steps against the step goal, and floors climbed (`recovery`, last 14
+  days). For hikes, vertical metres per hour (ascent / hours).
+- **Swim**: pace per 100 m, SWOLF (`swolf`), lengths, strokes, pool length (`poolLengthM`).
+- **Racket sports**: the sport of each session, the share of time in Z4-5, peak HR and calories per hour.
+  Also the load compared with the average run of the same length.
+
+## 3. Build the dashboard
+
+Write the page as one HTML file, with everything inline except Chart.js. It has no calls to Garmin.
+
+Load Chart.js with exactly this tag. It fixes the version and the content of the script:
+
+`<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.6.1/chart.umd.min.js" integrity="sha512-vMRyUfXe50uUhhDC+fk6UYBA/1VPj+I7Jn+wK0A3+wSVeUgT9OCz/xoF2M8KFvrmUOlb4Anv0FQUw8NafuzYPw==" crossorigin="anonymous"></script>`
+
+Put this tag first in `<head>`, exactly as it is. It blocks requests from the page:
+
+`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">`
+
+Do not load anything else from the web. Do not put data into the code. The page reads it from this
+line, which the server fills:
+
+`const DATA = /* garmin-data:start */null/* garmin-data:end */;`
+
+The page groups and calculates everything in the browser. Then:
+
+1. Call `writeDashboard` with `weeks` = {{weeks}} and `page` = the page code. The server puts the
+   data into the page and writes it (an existing page stays as a `.bak` file). The reply has the path
+   of the page and a digest of the data.
+2. Write the coach notes from the digest (see Coach notes below), and call `writeDashboard` again
+   with the same `weeks` and the `notes`, without `page`. Updates later replace only the data, so the
+   page code stays as you wrote it.
+
+### Time window
+
+Under the header, put a window bar. It selects whole Monday-Sunday weeks inside the embedded period:
+presets (last 4, 8, 12... weeks, and all) and a from-week and a to-week selector. Every widget about
+training follows the window, and the browser calculates it again from the embedded data. This
+includes totals, charts, calendar, records, strength exercise stats, and the period comparison. The
+period comparison compares the window with the same number of days right before it (from
+`activities` and `previousActivities`). Say "partial" when these days start before the data. The
+tiles "last 7 days against the 4-week average" end on the last day of the window, and take their
+baseline from all embedded data. The widgets about today do not follow the window, and say so:
+readiness, fitness age and the 14-day recovery panel. The URL hash also keeps the window (for
+example `#running@2026-09-07_2026-10-26`). The last week can still be in progress, when today is not
+a Sunday. Mark it (for example with *), and do not flag its load ramp.
+
+### Tabs and filter
+
+Each type has an icon and a colour (inline SVG, no icon font). Show the icon on its tab, its
+filter chip and in the type column of the tables. The icons are decorative (`aria-hidden`), and
+the text label stays.
+
+Put a tab bar under the header: **All**, **Run**, **Strength**, **Walk**, **Bike**, **Racket sports**, and
+**Hike**, **Swim** and **Other** only if the embedded data has activities of that type, so tabs do
+not come and go with the week window. Each tab label shows its session count. A type with no
+activities in the selected weeks stays visible and shows an empty state ("no sessions in the
+selected weeks"), not empty charts. The URL hash keeps the selected tab, so
+a reload or a shared link opens the same tab.
+
+On the **All** tab, put a row of chips: an "All" chip, then one chip for each type in the colour of
+that type. All types show by default. A click on a type chip shows only that type. A second click on
+the same chip, or a click on "All", shows all types again. The chips filter the header totals,
+weekly volume, consistency calendar, the load bars of load vs. recovery, and the activities table.
+Recovery data (HRV, sleep, resting HR, body battery) is not per type, and the filter never changes
+it. The **load ratio always uses all activities**: say this next to the tile when a filter is
+active.
+
+### All tab, top to bottom
+
+1. **Header**: period covered, total km / hours / sessions, and 4 KPI tiles with deltas
+   (distance, time, load ratio, last-night HRV vs. baseline).
+2. **Readiness today**: the verdict and its four inputs. Next to it, the **fitness age** card
+   (fitness age against actual age, achievable fitness age, and the components with Garmin's
+   targets).
+3. **Period comparison**: these weeks against the weeks before, for each type and in total.
+4. **Records**: the badges from the Compute section.
+5. **Weekly volume**: stacked bars for each type, with a line for the 4-week moving average.
+6. **Load safety**: the weekly load with its ramp % (highlight the flagged weeks), monotony and
+   strain.
+7. **Intensity minutes** for each week, against a line at 150 min.
+8. **Consistency calendar**: a GitHub-style heatmap of daily training minutes. When the user moves
+   the pointer over a day (or touches it on a phone), show a tooltip at once. The tooltip shows the
+   date, total minutes, and each activity with its name, distance and time. Use your own tooltip,
+   not the `title` attribute: it is slow, some viewers do not show it, and it never shows on touch.
+9. **Load vs. recovery**: one chart with daily load (bars, stacked by type) and HRV (line) on
+   twin axes - the heart of the dashboard.
+10. **Recovery panel**: HRV with baseline band, resting HR, sleep hours by stage and score, sleep
+    need against actual sleep, bedtime regularity, body battery (last 14 days). Only when I said yes
+    to the Recovery trend: a weekly chart over the week window with the mean of `sleepH`,
+    `sleepScore` and `rhr`. A mean counts only days with a value above 0, and a week with no value
+    is a gap, never 0.
+11. **Recent activities**: table with date, type, name, distance, time, pace, avg HR, ascent;
+    the 3 most recent expandable to show laps.
+12. **Coach notes**: at most 5 bullet points, each tied to a specific number in the dashboard
+   (e.g. "HRV 12% below baseline for 3 nights while load ratio is 1.4"). Training suggestions
+   only, no medical advice. Use only numbers of the digest. The page shows `DATA.notes` as HTML.
+   Do not mention in the notes the data or the sports that the `settings` of the reply exclude.
+   This rule applies also to data that another tool showed earlier in this chat.
+
+### Type tabs
+
+Each type tab shows only that type's data:
+
+1. **KPI tiles**: the numbers for each type from the Compute section, the last 7 days compared with
+   the 4-week average, and Garmin training load.
+2. **Weekly chart**: sessions and time for each week (bars). Add distance for Run, Walk and Bike.
+3. **Time in HR zones** for each week, stacked Z1-Z5.
+4. The sections of that type, below.
+5. **Activities**: the table for that type only, with laps where you got them.
+
+If a type has only one session, show a session card (its numbers and zones) and no trend
+charts ("one session so far"). Trends start at 2 sessions.
+
+**Run** adds:
+
+1. **Best efforts**: the fastest 1k, mile, 5k, 10k, half (and marathon) in the period, with date
+   and activity name.
+2. **Races**: one row for each race, side by side: date, name, time, pace, avg HR, avg power,
+   aerobic training effect.
+3. **Aerobic fitness**: a scatter of pace against avg HR, one dot for each run, coloured from
+   oldest to newest. Also pace and efficiency for each week.
+4. **Intensity**: the easy (Z1-2) and hard (Z4-5) share of running time for each week.
+5. **Running form**: weekly cadence, stride, ground contact time, vertical oscillation and ratio,
+   power. Use small multiples, one for each metric that is present, each with its unit.
+6. **Run Walk Run**: for each session with `runWalk`, the pace of the run segments against the
+   overall pace, and the walk time.
+7. **Training effect**: aerobic and anaerobic TE for each run (dots over time), and label counts
+   for each week.
+8. **Race predictor**: the predicted 5k, 10k, half and marathon times, with the best effort that
+   the prediction uses.
+9. **Long runs and pace split**: the long run share for each week (flag it above 35%), and the
+   split type of each race and long run. Also grade-adjusted pace against pace, and ascent for
+   each week.
+10. **Workout trend**, only when I said yes to the workout comparison: the runs of the same workout
+   across weeks, up to 3 workouts side by side. A workout is the run name without the place that
+   Garmin puts before " - ". Give a choice of metric: pace, avg HR, efficiency, cadence, ground
+   contact, vertical ratio, stride and power. For a run whose laps mark a warm-up, rest or
+   cool-down, use only its work laps (intensity `active` or `interval`) of 20 m and 8 s or more.
+   Take pace, HR, cadence, power and running form (`gctMs`, `vertRatioPct`, `strideCm` of each lap)
+   from those laps. A shorter lap is not a rep: for example an open step of the workout that ends
+   when you press lap. Show the reps and the fade: the pace of the last rep against the first of the
+   same workout step (`step`, the step with the most reps), only when those reps have the same
+   distance or time (within 15%).
+
+**Walk** adds pace and avg HR for each week, and steps, cadence and body battery change for each
+walk. It also adds daily steps against the goal, with floors (last 14 days). **Hike** adds
+vertical metres per hour. **Bike** adds average speed and ascent for each week, the ascent and
+vertical metres per hour for each ride, the share of time in Z1-2 and Z4-5 for each week and the
+indoor/outdoor split; for mountain-bike rides, `grit` (how hard the ride was) and
+`flow` (lower is smoother) of each ride. **Swim** adds pace per 100 m, SWOLF, lengths and strokes
+for each session. **Racket sports** adds the sport, avg HR and time in Z3+ for each session, Z4-5 share and peak HR.
+It also adds calories per hour, training effect, and its load against a run of the same length.
+
+The **Strength** tab adds, after the weekly chart: a weekly chart of completed sets for each
+movement category, and the **muscle-group balance**. The balance shows one bar for each muscle
+group: its average completed sets per week in the selected weeks, against the 10-20 band. It also
+gives the push:pull ratio. Then:
+
+1. **Exercises**: a table with one row for each exercise, grouped by muscle group. Each group has
+   a header row with its number of exercises and completed sets. Show the name, sessions, last
+   date and last top set (for example "70 kg x 6"). Also show the best estimated 1RM, the change
+   since the first session (arrow and %) and a sparkline of the top set. The user can sort by
+   every column inside each group, filter by group with chips, and use a search box.
+2. **Exercise detail**: when the user selects a row (click or Enter), a panel opens with
+   - a trend chart over time for each session: top-set weight and estimated 1RM (lines, kg) and
+     volume (bars, kg). Use reps instead of kg for exercises without weight, and seconds for timed
+     ones;
+   - every session of that exercise, newest first: date, workout name and its sets
+     (for example "35 x 12, 50 x 10, 60 x 8, 70 x 6"). For each set, show its % of the best
+     estimated 1RM and the rest after it. The panel header shows the median rest of the exercise.
+   The URL hash also keeps the selected exercise (for example `#strength/barbell-box-squat`).
+3. **Sessions**: each Strength activity opens to show all its exercises and sets, in the order
+   the user did them. Each exercise shows its muscle group.
+
+If an exercise has only one session, show its sets but no trend chart ("one session so far").
+
+Themes: put a "Theme" dropdown in the header, with the themes in groups:
+
+- Auto: System, which uses Midnight on a dark OS and Light on a light OS.
+- Dark: Midnight, Graphite, Ocean, Forest, Plum.
+- Light: Light, Paper, Mist.
+- Accessible: High contrast dark, High contrast light.
+
+On first load the theme is Midnight, also on a light OS. System is a choice in the menu, not the
+default. Midnight uses these colours: background `#0e1217`, panels `#161c24` and `#1c232d`, lines
+`#26303d`, text `#e6ebf2`, muted text `#8d99aa`, accent `#7cc4ff`, good `#3ecf8e`, bad `#ef5a5a`,
+warning `#f2c94c`. Design the other themes yourself. Define every colour as a CSS token, with one
+set of tokens for each theme. Dark themes use these bright type colours: Run `#ff7a45`, Strength
+`#a78bfa`, Walk `#34d399`, Hike `#a3e635`, Bike `#60a5fa`, Swim `#22d3ee`, Racket sports `#fbbf24`,
+Other `#94a3b8`. Light themes use darker variants of the same hues for contrast. Charts read the
+tokens and draw again when the theme changes. Keep the choice in `localStorage`, wrapped in
+try/catch, so the page still works when the browser blocks storage. Apply it before the first paint.
+
+Selection: a click on a filter selects what it shows, and never hides it. A click on a chart legend
+item shows only that series. A second click on the same item shows all series again. The type chips
+and the muscle-group chips work in the same way. This rule is for filters, chips and legends only:
+rows and details that open, such as laps or an exercise, close again on a second click.
+
+Colours of a change: show a better value in green, a worse value in red, and no change in grey.
+This applies to every change and delta, for example the change of an exercise or a KPI delta.
+Higher is better for volume (distance, time, sessions, load), HRV, sleep score, intensity minutes,
+efficiency, top set, estimated 1RM and sets. Higher is worse for resting HR, the load ramp,
+monotony and strain. A faster pace is better, so a slower second half of a split is red.
+
+Design: clean, data-dense but airy. On a phone, put two KPI tiles in each row. Make the page title a
+large h1 (about 32 px), clearly larger than the section headings. Use one fixed colour for each
+type, on its tab, chip, bars and lines in every chart. Use tabular numbers. Make the page work down
+to phone width (the tab bar scrolls horizontally, the page does not). Make the tabs work with the
+keyboard. Put tooltips on every chart and units on every axis. Use your own visual identity: no
+third-party app names, logos or brand colours.
+
+Automatic refresh: call `scheduleDashboardRefresh` without arguments. If its `pages` do not have
+the `path` of the page, ask me once whether to update the page automatically. If your client has a
+tool for questions with choices, use it: "No" (the default), every day at 07:00, weekdays at 07:00,
+every Monday at 07:00. Say that I can also tell you when in my own words, in any language, for
+example "Monday and Thursday at 18" or "the first day of each month at 8". If `scheduled` is true,
+the schedule is for all the pages: offer `cron`, in words, as the first choice after "No". Say that
+each automatic refresh replaces the data and removes the coach notes, and that the computer must be
+on. On a yes, turn the answer into a cron expression and call `scheduleDashboardRefresh` with `cron`
+and the `path` of the page. Tell me the schedule and the `next` runs of the reply in my language, in
+one line. If its `pages` already have the `path`, do not ask: tell me in one line, in my language,
+the schedule in words and the first `next` run, and that I can ask you to change or stop it.
+
+Finish with two lines in chat: what is in the dashboard with the path of the page and the command
+to open it (`open` on macOS, `xdg-open` on Linux, `start` on Windows), and anything that was missing.

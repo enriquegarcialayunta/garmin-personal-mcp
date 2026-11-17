@@ -1,0 +1,70 @@
+/**
+ * The example questions of "ask in your own words", by sport, with the tools that answer them.
+ * Questions of the sports outside AUTHORED are quoted word for word from the README; the site test
+ * checks it.
+ */
+export const QUESTIONS: Record<string, [question: string, tools: string][]> = {
+  running: [
+    ["List my last 5 activities, with pace and heart rate.", "listActivities"],
+    [
+      "How much time did I spend in each HR zone on my runs this month?",
+      "listActivities · getHeartRateZones",
+    ],
+    ["Show the laps of my last run.", "getActivityLaps"],
+    [
+      "How did my sessions named Tempo 5k and Long run change over the last 2 months?",
+      "listActivities",
+    ],
+    [
+      "My run on Saturday felt hard. Compare it with my sleep and HRV of the nights before.",
+      "listActivities · getSleep · getHrvRange",
+    ],
+  ],
+  strength: [
+    ["Which muscles did I train most this week?", "getActivitySets"],
+    [
+      "What was my heaviest squat set this month, and what 1RM does it suggest?",
+      "listActivities · getActivitySets",
+    ],
+    ["Which of my lifts have stalled over the last 6 weeks?", "listActivities · getActivitySets"],
+    ["How long did I rest between sets in my last strength session?", "getActivitySets"],
+    ["Did I do the reps and rests my workout planned?", "getActivityWorkouts · getActivitySets"],
+  ],
+  swimming: [
+    ["Show the laps of my last swim.", "getActivityLaps"],
+    ["How far did I swim this month, and at what pace?", "listActivities"],
+  ],
+  cycling: [
+    ["Compare the grit and flow of my last mountain-bike rides.", "listActivities"],
+    ["How many metres per hour did I climb on my last 5 rides?", "listActivities"],
+    [
+      "How much of my riding time was in Z1-2 and how much in Z4-5 over my last 5 rides?",
+      "listActivities",
+    ],
+  ],
+  padel: [
+    ["How many padel sessions did I play this month, and how long were they?", "listActivities"],
+    ["Show the details of my last padel session.", "getActivity"],
+  ],
+  every: [
+    ["List my last 5 activities, with pace and heart rate.", "listActivities"],
+    [
+      "How did my sessions named Tempo 5k and Long run change over the last 2 months?",
+      "listActivities",
+    ],
+  ],
+};
+
+/** The sports whose questions are written for the page, not taken from the README. */
+export const AUTHORED = new Set(["swimming", "padel"]);
+
+/** The line under the questions of a sport, or "". */
+export function note(sport: string): string {
+  if (sport === "every")
+    return "Any activity your Garmin records works the same way: walks, hikes, yoga, HIIT and more.";
+  if (AUTHORED.has(sport))
+    return "These examples are written for this page. Any question about an activity works the same way.";
+  return "";
+}
+
+export const label = (sport: string) => (sport === "every" ? "every activity" : sport);

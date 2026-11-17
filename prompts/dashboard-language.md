@@ -1,0 +1,22 @@
+Add {{language}} to my Garmin training dashboard. Use the tools of the `garmin-personal` MCP server.
+
+These languages are built in: {{builtIn}}. If {{language}} is one of them, do not translate and do
+not call `editDashboard`. Tell me that the page has it built in and that the page settings choose
+the built-in languages. Offer to add it there, and stop.
+
+1. Call `editDashboard` with `englishTexts: true`{{pathArgument}}. If there is no dashboard,
+   call `writeDashboard`{{pathWith}} first.
+2. Translate every English text into {{language}}:
+   - Keep each `{placeholder}` as it is.
+   - A text with `|` has two forms, the singular and the plural. Keep the `|` and translate both.
+   - Keep units (km, h, bpm, ms) and names (Garmin, Epley, Riegel, Foster, SWOLF, HRV) as they are.
+3. Call `editDashboard` with `languages` = { "<code>": { "<key>": "<text>", ... } }{{pathArgument}}.
+   The code is the language code, for example `de`, `fr` or `pt-BR`. Send at most 150 texts in one
+   call.
+4. If the reply lists `missing` texts for the language, translate them and call again.
+5. If `customWidgets` of the first reply has widgets with `texts`, translate their English texts
+   (`texts.en`) the same way, and call `editDashboard` with `widgetTexts` =
+   { "<widget id>": { "<code>": { "<key>": "<text>", ... } } }{{pathArgument}}.
+
+Finish with one line in chat: the language code, and that the Language menu of the page shows the
+language after a reload.

@@ -1,0 +1,174 @@
+import { addDays } from "../dates";
+
+/**
+ * The page's calculations: pure functions over the embedded data, shared by the widgets and tested in
+ * Node. Nothing here touches the page.
+ */
+
+export interface Activity {
+  id?: number;
+  name?: string;
+  type?: string;
+  /** The SDK sport name, from Garmin's sportTypeId. */
+  sport?: string;
+  start?: string;
+  km?: number;
+  duration?: string;
+  elapsed?: string;
+  pace?: string;
+  avgHR?: number;
+  maxHR?: number;
+  trainingLoad?: number;
+  [field: string]: unknown;
+}
+
+/**
+ * The type boards, in tab order. Their keys are SDK names: the sport of Garmin's `sportTypeId`, and the
+ * sub-sport `strengthTraining`. Any other SDK sport in the data gets a board too, before `generic` (Other).
+ */
+export const GROUPS: readonly string[] = [
+  "running",
+  "strengthTraining",
+  "walking",
+  "hiking",
+  "cycling",
+  "swimming",
+  "racket",
+  "generic",
+];
+
+/** Garmin types whose SDK sport is not their board: strength comes as `training` or `fitnessEquipment`. */
+const TYPE_BOARD = new Map([
+  ["strength_training", "strengthTraining"],
+  ["pickleball", "racket"],
+]);
+
+/** The racket sports of a Garmin watch, by type key. Padel's key is `paddelball`. */
+const RACKET: [RegExp, string][] = [
+  [/table_tennis/, "tableTennis"],
+  [/platform_tennis/, "platformTennis"],
+  [/padel|paddel/, "padel"],
+  [/pickleball/, "pickleball"],
+  [/racquetball|racketball/, "racquetball"],
+  [/squash/, "squash"],
+  [/badminton/, "badminton"],
+  [/tennis/, "tennis"],
+];
+
+/** The racket sport of a type key ("padel", "tableTennis"...); undefined for other types. */
+export function sportOf(key: string): string | undefined {
+  return RACKET.find(([re]) => re.test(key))?.[1];
+}
+
+/** The board of an activity: its SDK sport, or `generic` when the data has none. */
+export function groupOf(a: Activity): string {
+  const sport = typeof a.sport === "string" && a.sport && a.sport !== "all" ? a.sport : "generic";
+  return TYPE_BOARD.get(a.type ?? "") ?? sport;
+}
+
+/** A run: by its board. A row without a sport, from an older server, by its type key. */
+export function isRunning(a: Activity): boolean {
+  if (typeof a.sport === "string" && a.sport) return groupOf(a) === "running";
+  return typeof a.type === "string" && a.type.endsWith("running");
+}
+
+/** The type boards in tab order: the fixed groups, then the other SDK sports in `present` sorted, then Other. */
+export function boardOrder(present: ReadonlySet<string>): string[] {
+  const others = [...present].filter((g) => !GROUPS.includes(g)).toSorted();
+  return [...GROUPS.slice(0, -1), ...others, "generic"];
+}
+
+/**
+ * The tabs of a page, in order: the page script and the server both use this rule. A sport has a tab
+ * when the data has its activities, or when the `sports` setting names it.
+ */
+export function tabsFor(acts: Activity[], s: { sports?: string[]; exclude?: string[] }): string[] {
+  const present = new Set(acts.map(groupOf));
+  return [
+    "all",
+    ...(s.exclude?.includes("recovery") ? [] : ["recovery"]),
+    ...boardOrder(present).filter((g) => (s.sports ? s.sports.includes(g) : present.has(g))),
+  ];
+}
+
+/** The boards that the activities have, in tab order. */
+export function groupsIn(acts: Activity[]): string[] {
+  const present = new Set(acts.map(groupOf));
+  return boardOrder(present).filter((g) => present.has(g));
+}
+
+export const isIndoor = (key: string) =>
+  ["indoor_cycling", "virtual_ride", "treadmill_running", "indoor_rowing"].includes(key);
+
+/** Seconds of "1:02:03", "5:07" or "5:07/km"; 0 for anything else. */
+export function seconds(v: unknown): number {
+  const m = typeof v === "string" ? /^(\d+(?::\d{1,2}){1,2})(?:\/km)?$/.exec(v) : null;
+  return m ? m[1].split(":").reduce((s, x) => s * 60 + Number(x), 0) : 0;
+}
+
+/** The km and the moving seconds of the activities that have both: pace and speed come from these only. */
+export function timedDistance(acts: Activity[]): { km: number; seconds: number } {
+  return acts.reduce<{ km: number; seconds: number }>(
+    (s, a) => {
+      const sec = seconds(a.duration);
+      return typeof a.km === "number" && a.km > 0 && sec > 0
+        ? { km: s.km + a.km, seconds: s.seconds + sec }
+        : s;
+    },
+    { km: 0, seconds: 0 },
+  );
+}
+
+/** Strength and racket sports have little moving time: their session lasts the elapsed time. */
+export function sessionSeconds(a: Activity): number {
+  const g = groupOf(a);
+  const whole =
+    (g === "strengthTraining" || g === "racket" || sportOf(a.type ?? "") !== undefined) &&
+    typeof a.elapsed === "string";
+  return seconds(whole ? a.elapsed : a.duration);
+}
+
+export function dayOf(a: Activity): string | undefined {
+  return typeof a.start === "string" && /^\d{4}-\d{2}-\d{2}/.test(a.start)
+    ? a.start.slice(0, 10)
+    : undefined;
+}
+
+/** The index in `weeks` (Mondays) of the week that holds the activity; -1 when none does. */
+export function weekIndex(a: Activity, weeks: string[]): number {
+  const d = dayOf(a);
+  return d ? weeks.findIndex((w) => d >= w && d <= addDays(w, 6)) : -1;
+}
+
+export function mondayOf(day: string): string {
+  return addDays(day, -((new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7));
+}
+
+/** The Mondays of every week from the week of `start` to the week of `end`. */
+export function weeksOf(start: string, end: string): string[] {
+  const weeks: string[] = [];
+  for (let w = mondayOf(start); w <= end; w = addDays(w, 7)) weeks.push(w);
+  return weeks;
+}
+
+/** How late the automatic refresh may be: launchd and Task Scheduler start a missed run after a wake. */
+const LATE_MS = 60 * 60 * 1000;
+
+/** The automatic refresh was due over an hour before `now`; never without a valid due time. */
+export function isLate(due: string | undefined, now: number): boolean {
+  return Date.parse(due ?? "") + LATE_MS < now;
+}
+
+/** The activities of the weeks `from` to `to` (Mondays, both included). */
+export function activitiesIn<T extends Activity>(acts: T[], from: string, to: string): T[] {
+  const end = addDays(to, 6);
+  return acts.filter((a) => {
+    const d = dayOf(a);
+    return d !== undefined && d >= from && d <= end;
+  });
+}
+
+/** The activities named one of `names`; all of them when there are no names. */
+export function named<T extends Activity>(acts: T[], names: string[] | undefined): T[] {
+  return names?.length ? acts.filter((a) => a.name !== undefined && names.includes(a.name)) : acts;
+}

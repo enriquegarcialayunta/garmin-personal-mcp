@@ -1,0 +1,601 @@
+[
+  {
+    "name": "downloadActivityFit",
+    "description": "Download the ORIGINAL .FIT file of an activity and save it on the user's computer.\nReturns the absolute path of the saved .fit file (second-by-second HR, cadence, speed, laps).\nThe file is saved once in the fit folder of the data dir; a later call does not download it\nagain. Use it only when the user wants the file itself: getActivityLaps and getActivitySets\nalready read it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "activityId": {
+          "type": "integer",
+          "description": "Garmin activity id"
+        }
+      },
+      "required": ["activityId"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "editDashboard",
+    "description": "Changes the layout, the custom widgets or the languages of the dashboard page (a page from the\ntemplate; call writeDashboard first). Without arguments it only reads: the reply has the layout, the\ncustom widgets, the missing texts of each language, the catalogue of built-in widgets and `widgetApi`,\nthe guide to writing a custom widget. `layout` replaces the whole layout (the text of the page's\n'Copy layout'); `place` adds widgets at the end of a board; `widgets` adds or replaces custom widgets\nby id and saves them in the widget library (<data-dir>/widgets.json), which every page from the\ntemplate gets; `removeWidgets` removes them from this page and its boards, `forgetWidgets` also\nfrom the library. `widgetTexts` adds texts to custom widgets by id, language and key, e.g.\n{\"longest-ride\": {\"de\": {\"title\": \"Längste Fahrt\"}}}. `languages` adds page texts by key, e.g.\n{\"de\": {\"title\": \"Training + Erholung\"}}: keys and {placeholders} as in `englishTexts: true`; a\ntext with \"|\" has a singular and a plural form. Missing texts show in English.\n`removeLanguages` removes languages that `languages` added.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "layout": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {},
+          "description": "A whole layout: { base, boards: { all: [{ id, widget, type?, span, hidden?, baseSpan? }] }, seen?: { all: [widget names] } }. `seen` is the record of the preset widgets that each board has met: give it back as you got it."
+        },
+        "place": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "board": {
+                "type": "string",
+                "description": "all, recovery, running, strengthTraining, walking, hiking, cycling, swimming, racket, generic (Other), or another SDK sport name"
+              },
+              "widget": {
+                "type": "string",
+                "description": "A widget id of the catalogue or a custom widget"
+              },
+              "type": {
+                "type": "string",
+                "description": "The type the widget shows, when not the board's"
+              },
+              "span": {
+                "type": "integer",
+                "description": "Width in columns, 1 to 3"
+              }
+            },
+            "required": ["board", "widget"]
+          }
+        },
+        "widgets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Letters, digits and -, e.g. longest-ride"
+              },
+              "title": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string",
+                "description": "The body of a function (el, ctx): see widgetApi"
+              },
+              "span": {
+                "type": "integer"
+              },
+              "types": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Types the widget can show"
+              },
+              "texts": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "description": "Texts by language code and key; title is the title: see widgetApi"
+              }
+            },
+            "required": ["id", "title", "code"]
+          }
+        },
+        "removeWidgets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Ids of custom widgets to remove from this page"
+        },
+        "forgetWidgets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Ids of custom widgets to remove from the library and from this page"
+        },
+        "widgetTexts": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Texts of custom widgets by widget id, language code and key"
+        },
+        "languages": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "description": "Texts by language code and key"
+        },
+        "removeLanguages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Codes of added languages, e.g. de"
+        },
+        "englishTexts": {
+          "type": "boolean",
+          "description": "Also return the English texts to translate"
+        },
+        "path": {
+          "type": "string",
+          "description": "The .html file; relative paths are inside the data dir"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "garminGet",
+    "description": "Generic read-only GET on the Garmin Connect Personal API, for endpoints not covered by the\nother tools or when a query parameter name has to be adjusted. 'path' is relative and starts\nwith '/', e.g. /fitnessage-service/fitnessage/v2/2026-10-25 . 'query' is an optional\nURL query string without '?', e.g. date=2026-10-25&foo=bar .",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Relative API path starting with /"
+        },
+        "query": {
+          "type": "string",
+          "description": "Query string, e.g. a=1&b=2"
+        }
+      },
+      "required": ["path"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getActivity",
+    "description": "Garmin's full JSON for one activity: summaryDTO (start time, distance in metres, duration and\nmovingDuration in seconds, averageSpeed in m/s, HR, calories, training effect and load,\nintensity minutes, Body Battery change, sets and reps of a strength session), splitSummaries\n(one total per split type, such as the run and walk segments), the activity type and\nmetadataDTO (device maker, lap count, personal record flag). Private ids are left out.\nUse it for a field that listActivities does not give: listActivities gives the common fields\nin km and min/km, for many activities in one call. It has no laps, sets or samples: use\ngetActivityLaps, getActivitySets or downloadActivityFit for them.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "activityId": {
+          "type": "integer",
+          "description": "Garmin activity id"
+        }
+      },
+      "required": ["activityId"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getActivityLaps",
+    "description": "Laps of an activity as recorded by the watch (manual laps, auto-lap every km, or workout\nsteps), read from the original .FIT file. One row per lap: distance (km), timer time,\npace (min/km, foot sports) or speed (km/h), average/max HR, cadence (spm for running),\nascent/descent, average power, running form (gctMs, vertRatioPct, vertOscCm, strideCm),\nintensity (active, interval, rest, recovery, warmup, cooldown; the auto laps of a free run can\nbe interval), lap trigger, and the step of the planned workout (step: the reps of one drill\nshare it). A swim lap also has metres, swimPace (per 100 m), stroke, lengths, swolf and strokes.\nUse it for intervals and per-km splits; getActivity does not have them.\nFor a run: split (pace of the first and second half, kind, hrDriftPct) and, for a structured\nworkout, work (reps, pace, avgHR, and the fade of each step with more than one rep, pct). For a\nswim: sets, the laps in a row of one distance, stroke and intensity (reps, firstPace, lastPace, pct: above 0 is\nslower, firstSwolf, lastSwolf). null is n/a.\nFor a run, plan is the planned workout that the watch ran (null without one): its name and,\nper lap with a step in lap order, the step's target (type, low, high, unit; or zone), done (the\nlap in that unit), verdict (hit inside the target, ends included, or miss) and off (how far\noutside, in the unit: s/km for pace, above 0 is slower). An open or zone target, a target in\n%max or %ftp, a target outside a plausible range, a lap under 15 m or 8 s or a lap without the\nvalue has verdict null.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "activityId": {
+          "type": "integer",
+          "description": "Garmin activity id"
+        }
+      },
+      "required": ["activityId"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getActivitySets",
+    "description": "Strength training sets of an activity, read from the original .FIT file. One entry per\nexercise, in the order first done, with its movement category, its primary and secondary\nmuscles (from Garmin's exercise catalogue) and its active sets: reps,\nweight (kg, absent when none was recorded), set time in seconds and the rest after the set\n(restSec). Each exercise with weight also has top (the heaviest set of 1 to 12 reps, then the\nmost reps; without one, the heaviest set) and e1rmKg (the best estimated 1RM, Epley, of its\nsets of 1 to 12 reps; null when it has none). Exercise names are stable across sessions, so\nthey can be used for per-exercise trends. Edits made later in Garmin Connect (renamed\nexercises, corrected reps or weights) are not in the .FIT file. Use it for strength sessions;\nfor runs, rides and swims use getActivityLaps.\nplan is the planned workout that the watch ran (null without one): its name and, per planned\nexercise and rep plan (a pyramid gives a row per rep plan) in plan order, plannedSets,\nplannedReps (low to high; high null is at least low),\ndoneSets, reps, and verdict (hit or miss, why: sets or reps; extra and over count the done sets\nabove the plan and above the high end); a warm-up or cool-down row (part) and a notInPlan row\nhave verdict null. In a rest-pause group (a repeat of one exercise with a rest of 20 s or less\ninside it and a longer rest after it), only the first set of each pass is judged on reps.\nSuch a row has restPause true.\nEach planned row also has plannedRestSec: the planned rests right after its sets,\nin seconds and plan order (null: an open rest, ended with the lap button; empty: no\nrest right after it, such as the first exercise of a superset).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "activityId": {
+          "type": "integer",
+          "description": "Garmin activity id"
+        }
+      },
+      "required": ["activityId"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getActivityWorkouts",
+    "description": "The planned workout that an activity followed, as created in Garmin Connect: its steps in\norder, each with its intensity (warmup/active/rest/recovery/cooldown), its duration (time in\nseconds, reps, or open), its target (cadence, heart rate, pace, or open, with low and high\nvalues), the exercise for strength steps, and the coach's notes. A step with durationType\nREPEAT_UNTIL_STEPS_CMPLT repeats the steps from stepIndex durationValue up to it, targetValue\ntimes in all. Use it for the whole plan and its notes. For plan against done (hit or miss),\nread the plan field of getActivitySets (strength) or getActivityLaps (runs) instead; a ride\nor a swim has no plan field.\nAn empty list means the activity followed no planned workout. Null fields are left out.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "activityId": {
+          "type": "integer",
+          "description": "Garmin activity id"
+        }
+      },
+      "required": ["activityId"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getBodyBattery",
+    "description": "Body Battery for up to 14 days, yyyy-MM-dd: for each day how much it charged and drained,\nits readings through the day as [timestamp, level] pairs, and the events that changed it\n(sleep, activities, stress, naps) with their start, duration and impact, and Garmin's\nfeedback. Use it to see why Body Battery went up or down. For one number per day with steps\nand stress use getDailySummary; for the change of one activity, listActivities.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "fromDate": {
+          "type": "string",
+          "description": "From date yyyy-MM-dd"
+        },
+        "toDate": {
+          "type": "string",
+          "description": "To date yyyy-MM-dd"
+        }
+      },
+      "required": ["fromDate", "toDate"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getDailyHeartRate",
+    "description": "Heart rate of one day, yyyy-MM-dd: restingHeartRate, minHeartRate and maxHeartRate (bpm),\nlastSevenDaysAvgRestingHeartRate, and heartRateValues, the samples of the day as [timestamp,\nbpm] pairs (several hundred, so the answer is about 13 KB). Use it for the HR curve of a day.\nFor resting HR over several days use getDailySummary with fromDate and toDate; for the zone\nlimits use getHeartRateZones.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "description": "Date yyyy-MM-dd"
+        }
+      },
+      "required": ["date"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getDailySummary",
+    "description": "Daily user summary (steps, calories, stress, body battery, resting HR) for one date, or for up to 14 days (fromDate and toDate; the range answer has Garmin's v2 field names), yyyy-MM-dd. Use it for the totals of each day; for sleep use getSleep, for the Body Battery events getBodyBattery, and for the HR samples getDailyHeartRate.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "description": "Date yyyy-MM-dd"
+        },
+        "fromDate": {
+          "type": "string",
+          "description": "First date yyyy-MM-dd, with toDate"
+        },
+        "toDate": {
+          "type": "string",
+          "description": "Last date yyyy-MM-dd, with fromDate"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getDashboardData",
+    "description": "All the data of the training dashboard in one call: HR zones, fitness age, the activities of the\nlast `weeks` weeks (compact summaries, with strength sets and laps where they apply; a strength\nsession with sets also has `planVerdicts`: hit or miss for each exercise of the plan that the\nwatch ran, null without a plan; a run whose laps are read, or whose .FIT file is saved, has\n`planVerdicts` too: hit or miss for each lap with a planned target), the activities of the\nweeks before for the period comparison,\ndaily HRV, the last 14 days of sleep and daily\nsummaries (with `recoveryHistory`, also short rows of the older days: date, sleep hours, sleep\nscore and resting HR), and `units`: the measurement system of the Garmin profile (metric, statute_us or\nstatute_uk) that the page shows; the data itself is always metric; `locale`: the language of\nthe Garmin profile, e.g. it or pt-BR. Keeps a local cache and\nfetches from Garmin only what is new since the last call, so a rebuild or an update needs few\ncalls. `sync` in the result says what was fetched: Garmin calls, .FIT files downloaded\n(fitDownloads) and new activities.\n`digest`, first in the result: the server's totals for the whole period and for each\nMonday-Sunday week (sessions, km, hours, load), the training load of the last 7 and 28 days,\nbest efforts, races and strength top sets, the plan verdicts of the strength sessions done\n(`strengthPlan`), the long runs with their half split and HR drift, the\nlongest run and the race predictions (Riegel), the page's readiness verdict for today with its\ninputs (`readiness`), and today's fitness, fatigue and form (`fitnessFatigue`); quote them\ninstead of your own sums. For another date range, use the activities: each one is on its own\nline. A load is null (n/a) when the sessions have none; estimatedLoads counts the loads that\nare estimates from heart rate. A week with partial: true starts before the period. Without HRV\nand sleep data the digest has no `readiness`: give the verdict as n/a.\nThe full result is large: 12 weeks can be about 180 KB, which can be over the tool output limit\nof the assistant. `writeDashboard` with `preview: true` gives only the digest, the activities of\neach board and the settings.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "weeks": {
+          "type": "integer",
+          "description": "Weeks to cover, default 12, max 52"
+        },
+        "workouts": {
+          "type": "boolean",
+          "description": "Also the laps of the runs of each run name that repeats, to compare a workout across weeks: the last 8 (downloaded once) and older ones whose .FIT file is saved; default false"
+        },
+        "recoveryHistory": {
+          "type": "boolean",
+          "description": "Also the sleep and resting HR rows of the whole period, not only the last 14 days"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getFitnessAge",
+    "description": "Garmin fitness age for a date, yyyy-MM-dd: fitnessAge, chronologicalAge, achievableFitnessAge\nand previousFitnessAge, and components: bodyFat, vigorousDaysAvg and vigorousMinutesAvg (per\nweek) and rhr (resting HR), each with its value and, when Garmin suggests one, targetValue and\npotentialAge (the fitness age at the target). stale is Garmin's flag for an old value. Use it\nfor fitness age; for the body fat trend use getWeight.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "description": "Date yyyy-MM-dd"
+        }
+      },
+      "required": ["date"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getHeartRateZones",
+    "description": "The heart rate zones set in Garmin Connect: a list with one entry per sport that has its own\nzones (sport DEFAULT for the others), each with trainingMethod (how Garmin sets the zones),\nzone1Floor to zone5Floor (the lowest bpm of each zone; a zone ends where the next one\nstarts, zone 5 at maxHeartRateUsed), maxHeartRateUsed, restingHeartRateUsed and\nlactateThresholdHeartRateUsed. It takes no parameters. It gives the limits only: the time in\neach zone of an activity is hrZonesSec in listActivities.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getHrvRange",
+    "description": "Overnight HRV for a date range, yyyy-MM-dd: hrvSummaries, one row per night with HRV data\n(a night without data has no row), with calendarDate, lastNightAvg (ms, the average of the\nnight), lastNight5MinHigh, weeklyAvg (the 7-night average), status (BALANCED, UNBALANCED or\nLOW) and baseline (balancedLow to balancedUpper: the normal range). Ask at most 28 days in\none call: Garmin may refuse a longer range. Use it for the HRV trend; for the sleep of a\nnight use getSleep, and for resting HR use getDailyHeartRate or getDailySummary.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "fromDate": {
+          "type": "string",
+          "description": "From date yyyy-MM-dd"
+        },
+        "toDate": {
+          "type": "string",
+          "description": "To date yyyy-MM-dd"
+        }
+      },
+      "required": ["fromDate", "toDate"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getSleep",
+    "description": "Sleep for one night (date: the morning you woke up), or for up to 14 nights (fromDate and\ntoDate), yyyy-MM-dd, as one compact row per night: bedtime and wake (local HH:mm), hours of\nsleep, deep, light, REM and awake, the sleep score and its quality, the sleep need (hours),\naverage heart rate, average and lowest SpO2, average respiration, awake count, average sleep\nstress and Garmin's feedback. Missing values are left out, and a night without sleep data has\nonly its date. Set raw=true for Garmin's JSON.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "description": "Date yyyy-MM-dd"
+        },
+        "fromDate": {
+          "type": "string",
+          "description": "First date yyyy-MM-dd, with toDate"
+        },
+        "toDate": {
+          "type": "string",
+          "description": "Last date yyyy-MM-dd, with fromDate"
+        },
+        "raw": {
+          "type": "boolean",
+          "description": "Return Garmin's raw JSON instead of the summary"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "getWeight",
+    "description": "Weight for a date range, yyyy-MM-dd: the latest weight of each day (with body fat, muscle\nand bone mass, BMI and body water when a scale records them), the average of the range, and\nthe last weight before and the first after the range. Set includeAll=true for every entry\nof each day. Weight, muscle mass and bone mass are in grams. The range has no day cap: ask a\ntrend of months in one call.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "fromDate": {
+          "type": "string",
+          "description": "From date yyyy-MM-dd"
+        },
+        "toDate": {
+          "type": "string",
+          "description": "To date yyyy-MM-dd"
+        },
+        "includeAll": {
+          "type": "boolean",
+          "description": "Every weight entry of each day, not only the latest"
+        }
+      },
+      "required": ["fromDate", "toDate"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "listActivities",
+    "description": "List the user's Garmin activities (most recent first) as a compact summary: id, name, type,\nlocal start time, distance (km), moving duration, average pace, average/max heart rate,\ncadence, ascent; when Garmin has them: elapsed time (if longer than moving time), race flag,\nGarmin training load, aerobic/anaerobic training effect and label, seconds in HR zones 1-5,\ncalories, moderate/vigorous intensity minutes, body battery change, steps, swim SWOLF, pool\nlength, lengths and strokes, power, mountain-bike grit and flow, a ride's km/h, ascent per hour\nand easy (zones 1-2) and hard (zones 4-5) share of the zone time, running form (stride,\nground contact, vertical oscillation and ratio), grade-adjusted pace, best efforts (1k,\nmile, 5k, 10k, half, marathon) and run/walk segments. Dates are yyyy-MM-dd. Set raw=true for Garmin's\nfull JSON. limit is at most 200; names filters the last 200 activities of the date window.\nUse it to find activity ids and to compare many activities. For the laps, sets or plan of one\nactivity, give its id to getActivityLaps, getActivitySets or getActivityWorkouts.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "startDate": {
+          "type": "string",
+          "description": "Start date yyyy-MM-dd (optional)"
+        },
+        "endDate": {
+          "type": "string",
+          "description": "End date yyyy-MM-dd (optional)"
+        },
+        "activityType": {
+          "type": "string",
+          "description": "Activity type key (optional): a parent type such as running or cycling, or a subtype such as trail_running"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Max number of activities, default 20"
+        },
+        "raw": {
+          "type": "boolean",
+          "description": "Return Garmin's raw JSON instead of the summary"
+        },
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Activity names (optional): keep only the activities whose name contains one of them, ignoring case"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "scheduleDashboardRefresh",
+    "description": "Turns on, changes or stops the automatic refresh of a dashboard page. Use it only when the user\nasks for it or says yes to the question of a dashboard prompt. A job in the scheduler of the\ncomputer (launchd, cron or Task Scheduler) replaces the data of the page at the given times, also\nwith no assistant open. The refresh removes the coach notes, because old notes do not agree\nwith new data. The computer must be on at that time. The page must exist (writeDashboard first).\n`last` is the last automatic run: its time, the pages that it could not update, with the error,\nand in `partial` the pages that it updated with gaps. A page shows a note when its update is\nmore than 1 hour late: `last` tells why.\n`cron`: convert what the user says, in any language, into a 5-field cron expression in local\ntime: minute hour day-of-month month weekday, numbers only (0 = Sunday), e.g. \"0 7 * * 1-5\" for\nweekdays at 7. Two runs must be at least 1 hour apart. The cron is for all scheduled pages;\n`path` adds that page (default the main page); `off` stops the refresh of `path`, or of every\npage when no `path` is given. Without arguments it only reads. The reply has `next`, the next\nruns in local time: tell them to the user in their language, so they can check the schedule.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "cron": {
+          "type": "string",
+          "description": "minute hour day-of-month month weekday, e.g. \"0 7 * * *\"; default 0 7 * * *"
+        },
+        "path": {
+          "type": "string",
+          "description": "The .html file; relative paths are inside the data dir"
+        },
+        "off": {
+          "type": "boolean",
+          "description": "Stop the refresh"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "showDashboard",
+    "description": "Shows the training dashboard in the chat, in assistants that show MCP Apps: the page of `path`\n(default <data-dir>/garmin-dashboard.html) with its layout, custom widgets, languages and settings,\nor the preset page when there is none, with new data of the last `weeks` weeks. Writes no page file,\nbut updates the data cache and the saved .FIT files as getDashboardData does, and has no coach\nnotes. Returns the page path, the digest of the data and the page settings. Other assistants show\nonly this reply: there, writeDashboard writes the page as a file.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "weeks": {
+          "type": "integer",
+          "description": "Weeks to cover, default the page's or 12, max 52"
+        },
+        "path": {
+          "type": "string",
+          "description": "The .html file; relative paths are inside the data dir"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "writeDashboard",
+    "description": "Writes the training dashboard page (default <data-dir>/garmin-dashboard.html) with the data of the\nlast `weeks` weeks, and returns its path and a short digest of the data (totals, weekly sums, load,\nbest efforts, races, long runs, race predictions, strength top sets, readiness, fitness and form,\nHRV, recovery, fitness age, sync) for the coach notes. Without HRV and sleep data the digest has\nno readiness: give the verdict as n/a.\nAn existing page keeps all its code, layout and widgets: its data is replaced. A page with\ndifferent page code gets the page code of the server and keeps its layout and widgets; the result then has `page: \"upgraded\"`,\n`previousServer` (the server version that wrote the page, n/a when unknown) and `server`. Every page from the template\nalso gets the custom widgets of the widget library (<data-dir>/widgets.json), not placed on a board.\nOn a page from the template, an edited board also gets the widgets that a release adds to its preset, one time;\nthe result lists the ones that the page shows in `addedWidgets` (board -> widget ids).\n`layout` writes a new page\nfrom the template: `preset` (the default widgets) or `blank` (empty boards). It keeps the languages\nadded with editDashboard `languages`. `page` writes your own\npage code instead; it must contain /* garmin-data:start */null/* garmin-data:end */. A replaced\npage is kept as <file>.bak. The .bak keeps the page from before the build: a write that follows\nwithin 15 minutes (the notes, a new title) does not replace it.\n`notes`: at most 5 plain-text coach notes; the server escapes them.\n`settings` replace the page's settings (title, headline, sports, data to leave out, languages,\nthemes); without them the page keeps its own. The page holds only the data, languages and themes\nthey keep. `pageLanguages` in the result lists the languages of the page's Language menu, and\n`settings` the settings that the page keeps. `missingProfileLanguage` is the language of the Garmin\nprofile when the page has no texts in it (it shows English); editDashboard `languages` adds it.\n`missingWidgetTexts` lists the custom widgets that miss texts in a language of the page, with\nthose languages; editDashboard `widgetTexts` adds them.\n`preview: true` writes no page file (it updates the data cache, as getDashboardData does): it\nreturns the digest, the activities of each board and the `settings` of the page.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "weeks": {
+          "type": "integer",
+          "description": "Weeks to cover, default 12, max 52"
+        },
+        "notes": {
+          "maxItems": 5,
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Coach notes, plain text; without notes the page has none"
+        },
+        "layout": {
+          "type": "string",
+          "enum": ["preset", "blank"],
+          "description": "Write a new page from the template with this layout"
+        },
+        "page": {
+          "type": "string",
+          "description": "Your own page code, with an empty garmin-data block, instead of the template"
+        },
+        "path": {
+          "type": "string",
+          "description": "The .html file; relative paths are inside the data dir"
+        },
+        "settings": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "Replaces the title in every language"
+            },
+            "headline": {
+              "type": "string",
+              "description": "A line under the title"
+            },
+            "sports": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The boards to keep, e.g. running, cycling; all when not set"
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["recovery", "fitnessAge", "zones", "names", "notes"]
+              },
+              "description": "The data to leave out of the page"
+            },
+            "languages": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Languages to keep: en, it, de, fr, es, pt; when not set, English and the language of the Garmin profile"
+            },
+            "language": {
+              "type": "string",
+              "description": "Default language: auto or a code"
+            },
+            "themes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Themes to keep: system, midnight, graphite, ocean, forest, plum, munichDark, light, paper, mist, munich, hcDark, hcLight"
+            },
+            "theme": {
+              "type": "string",
+              "description": "Default theme"
+            },
+            "workouts": {
+              "type": "boolean",
+              "description": "Compare the same run workout across weeks (Workout trend widget): the server loads the laps of the last 8 sessions of each repeated run name, and of older ones whose .FIT file is saved; off when not set"
+            },
+            "recoveryHistory": {
+              "type": "boolean",
+              "description": "Keep the sleep and resting HR rows of the whole period in the page, not only the last 14 days; off when not set"
+            },
+            "shared": {
+              "type": "boolean",
+              "description": "A page for another person, e.g. a coach: a new page file is readable by other users of the computer; off when not set"
+            }
+          },
+          "description": "The page settings; replaces the page's own"
+        },
+        "preview": {
+          "type": "boolean",
+          "description": "Write nothing: return the digest, the activities of each board and the page settings"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  }
+]

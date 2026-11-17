@@ -1,0 +1,47 @@
+Update my Garmin **training + recovery dashboard** with the new data (today is {{today}}). Use the
+tools of the `garmin-personal` MCP server. Answer in my language.
+
+1. Call `writeDashboard` with {{weeksArgument}}{{pathArgument}}, without `layout` and without
+   `page`. The server keeps the page with its layout, widgets and languages, and replaces its
+   data and adds the new preset widgets of a release to a board that I edited. A page with different page code gets the page code of the server and keeps all of these. If there is no
+   page yet, the server writes one from the template.
+   If the reply of this first call has `page: "upgraded"`, tell me that the page has the page code of
+   server `server` now, and that server `previousServer` wrote it before. Show a value that is
+   "n/a" as "n/a". The reply of step 3 does not have these values: do not guess a version.
+   If the reply of this first call has `addedWidgets` (board -> widget ids), tell me which widgets
+   the update added to which board. Give the ids as the reply gives them: do not make up a title.
+   The reply of step 3 does not have them. Without `addedWidgets`, say nothing about added widgets.
+   If the reply has `skippedWidgets`, tell me the id and the problem of each one. The update went
+   on without them. To remove one, use `editDashboard` with `forgetWidgets`.
+2. Write at most 5 coach notes from the digest of the reply. Each note names a specific number of the
+   digest. Training suggestions only, no medical advice. Plain text, in my language.
+3. Call `writeDashboard` again with the same `weeks`{{pathArgument}} and the `notes`.
+4. If the reply lists `languages` with `missing` texts, translate them as the `dashboard-language`
+   prompt says, and call `editDashboard`{{pathWith}} to save them.
+
+If a `writeDashboard` result has `missingWidgetTexts`, call `editDashboard`{{pathWith}} without
+changes, translate the English texts of those widgets (`customWidgets[].texts.en`) into the listed
+languages, keeping each `{placeholder}`, and call `editDashboard` with `widgetTexts` =
+{ "<widget id>": { "<code>": { "<key>": "<text>", ... } } }{{pathArgument}}.
+
+Do not mention in the notes the data or the sports that the `settings` of the reply exclude. This
+rule applies also to data that another tool showed earlier in this chat.
+
+Use only numbers of the digest. **Never invent, interpolate or estimate missing values.** If a value
+is missing, write "n/a". If a call fails, say which one and why in one line.
+
+If the reply has `missingProfileLanguage`, add one line: my Garmin profile uses that language, the
+page shows English, and the `dashboard-language` prompt adds the language.
+
+Finish with two lines in chat: the period that the dashboard covers now, with the number of new
+activities (`sync.newActivities`), and anything that was missing. If `sync.failedDays` is more than
+0, name the dates in `sync.failedDates`. If `sync.failedSections` is not empty, name those sections
+(HR zones, fitness age, HRV, units). HR zones and units then use the last saved values, if there are
+any; say so. Fitness age and HRV show as "n/a". If `sync.failedDetails` is more than 0, say that
+this many sessions have no laps or sets, so the strength and lap numbers are not complete. If
+`sync.stoppedEarly` is true, say that Garmin stopped answering (a rate limit or the network), and
+that I can run the update again in a few minutes.
+
+Call `scheduleDashboardRefresh` without arguments. If its `pages` do not have this page, add one
+line: you can update the page automatically when I ask, in my own words, for example "update it
+every Monday at 7".

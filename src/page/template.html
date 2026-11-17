@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- blocks fetch, XHR and web resources, also from a custom widget; WebRTC and navigation are not covered -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="garmin-template" content="page-code-id" />
+    <title>Training + Recovery</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%278.7%27 fill=%27%230e1217%27/%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%2710%27 fill=%27none%27 stroke=%27%237cc4ff%27 stroke-width=%274.5%27 opacity=%27.3%27/%3E%3Cpath d=%27M16 6a10 10 0 1 1-10 10%27 fill=%27none%27 stroke=%27%233ecf8e%27 stroke-width=%274.5%27 stroke-linecap=%27round%27/%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%273.4%27 fill=%27%237cc4ff%27/%3E%3C/svg%3E"
+    />
+    <!--touch-icon-->
+    <script>
+      // the server fills the settings; the theme is set before the first paint. An object, like the
+      // blocks below: at the end of a statement the formatter moves the semicolon into the block
+      window.GARMIN_SETTINGS = {
+        settings: /* garmin-settings:start */ null /* garmin-settings:end */,
+      }.settings;
+      try {
+        var garminTheme = localStorage.getItem("garmin-theme");
+      } catch (e) {
+        // a blocked storage gives the default
+      }
+      {
+        let s = window.GARMIN_SETTINGS || {};
+        let themes = s.themes;
+        let fallback =
+          s.theme || (themes && themes.indexOf("midnight") < 0 ? themes[0] : "midnight");
+        // a theme that the page no longer has gives the default too
+        document.documentElement.dataset.theme =
+          garminTheme && (!themes || themes.indexOf(garminTheme) >= 0) ? garminTheme : fallback;
+      }
+    </script>
+    <!--style-->
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+      // the server fills these blocks; nothing else in the page changes on an update
+      window.GARMIN = {
+        data: /* garmin-data:start */ null /* garmin-data:end */,
+        layout: /* garmin-layout:start */ null /* garmin-layout:end */,
+        widgets: /* garmin-widgets:start */ [] /* garmin-widgets:end */,
+        languages: /* garmin-languages:start */ {} /* garmin-languages:end */,
+        i18n: /* garmin-i18n:start */ {} /* garmin-i18n:end */,
+        refresh: /* garmin-refresh:start */ null /* garmin-refresh:end */,
+      };
+    </script>
+    <!--script-->
+  </body>
+</html>

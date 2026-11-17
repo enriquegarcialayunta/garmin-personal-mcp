@@ -1,0 +1,696 @@
+import { addDays } from "./dates";
+import { hms, paceText, round, swimPaceText } from "./fit";
+import {
+  type Activity,
+  dayOf,
+  groupOf,
+  isRunning,
+  mondayOf,
+  sessionSeconds,
+  seconds,
+  weekIndex,
+  weeksOf,
+} from "./analytics/calc";
+import {
+  fitnessFatigueFrom,
+  loadOf,
+  loadRatio,
+  loadSafety,
+  periodWindow,
+  readinessOf,
+  zonesOf,
+} from "./analytics/metrics";
+import {
+  aerobicTrend,
+  bestProgression,
+  isLongRun,
+  longestShare,
+  racePredictionsOf,
+  runPlanAdherence,
+  type RunPlanMiss,
+  type SplitKind,
+  splitOf,
+  weeklyIntensity,
+  workoutOf,
+} from "./analytics/running";
+import { strokesPerLength, swimPace, swimTrend } from "./analytics/sports";
+import {
+  completed,
+  planAdherence,
+  type PlanMiss,
+  type StrengthSet,
+  topSet as pageTopSet,
+} from "./analytics/strength";
+
+type Json = Record<string, unknown>;
+
+/** A load is null (n/a) when the sessions have none; estimatedLoads counts estimates from HR. */
+interface Totals {
+  sessions: number;
+  km?: number;
+  hours?: number;
+  load: number | null;
+  estimatedLoads?: number;
+}
+
+interface Week {
+  sessions: number;
+  km: number;
+  runKm: number;
+  hours: number;
+  load: number | null;
+  estimatedLoads?: number;
+  /**
+   * The page's Load safety ramp: the load in % against the week before, 1 decimal; above 10 is the
+   * page's warning level. Null when the week before has no load or is partial, and for a week in
+   * progress.
+   */
+  rampPct: number | null;
+  /** The page's Intensity share: the runs' zone time in zones 1-2, in %, 0 decimals; null without zone time. */
+  runEasyPct?: number | null;
+  /** The page's Intensity share: the runs' zone time in zones 4-5, in %, 0 decimals; null without zone time. */
+  runHardPct?: number | null;
+  /** The page's Long runs: the longest run's km in % of the week's run km, 0 decimals; null without run km. */
+  longRunSharePct?: number | null;
+  /** The period starts after this Monday: the week is not whole. */
+  partial?: true;
+}
+
+/** The running sums of a type or a week; `known` and `estimated` count the sessions with a load. */
+interface Sum {
+  sessions: number;
+  km: number;
+  runKm: number;
+  hours: number;
+  load: number;
+  known: number;
+  estimated: number;
+}
+
+interface TopSet {
+  date: string;
+  top: string;
+}
+
+/** The page's swim numbers, so that the coach quotes the page. Open water and pool stay apart. */
+interface Swims {
+  /** The km of the swims with a distance; null when no swim of the week has one. */
+  weekly: Record<string, { sessions: number; km: number | null }>;
+  longest: { date: string; name: unknown; km: number; openWater: boolean } | null;
+  /** The newest first. */
+  recent: {
+    date: string;
+    name: unknown;
+    openWater: boolean;
+    km: number | null;
+    pace: string | null;
+    swolf: number | null;
+    strokesPerLength: number | null;
+    poolLengthM: number | null;
+  }[];
+  /** The Swim technique trend. */
+  poolTrend: {
+    poolLengthM: number;
+    swims: number;
+    from: string;
+    left: number;
+    comparedSwims: number | null;
+    pace: { recent: string; before: string } | null;
+    strokesPerLength: { recent: number; before: number } | null;
+  } | null;
+}
+
+/** What Claude needs for the coach notes, in a few KB instead of the whole getDashboardData result. */
+export interface Digest {
+  period: Json;
+  totals: Record<string, Totals>;
+  previousPeriodTotals: Record<string, Totals>;
+  weekly: Record<string, Week>;
+  load: {
+    last7Days: number | null;
+    weeklyAvgLast28Days: number | null;
+    acuteToChronic: number | null;
+    estimatedLoads: number;
+    /** The page's Foster monotony (2 decimals) and strain (1 decimal) of the last 7 days; null: n/a. */
+    monotony: number | null;
+    strain: number | null;
+  };
+  bestEfforts: Record<string, { time: string; date: string; name: unknown }>;
+  /**
+   * Each run (board "running") that set a new fastest time of a best-effort distance, oldest first:
+   * the last one is the best of the period, not an all-time record. A tie is no new best. `previous`
+   * is the time it beat; null for the first effort of the period.
+   */
+  recordProgression: Record<
+    string,
+    { date: string; time: string; previous: string | null; id: unknown; name: unknown }[]
+  >;
+  races: Json[];
+  /** Runs (board "running") that are a race or over 15 km, newest first, with the page's split. */
+  longRuns: {
+    date: string;
+    name: unknown;
+    km: number;
+    /** "m:ss/km"; null without a split (no laps, or fewer than 2 laps with distance). */
+    firstPace: string | null;
+    secondPace: string | null;
+    kind: SplitKind | null;
+    /** 1 decimal; null when a counted lap has no HR, or without a split. */
+    hrDriftPct: number | null;
+  }[];
+  /** The longest run (board "running") of the period; absent without a run that has a distance. */
+  longestRun?: { date: string; name: unknown; km: number };
+  /** Only when the period has swims. */
+  swims?: Swims;
+  /** One row per best effort of 5 km or more, fastest first (the first row is the page's prediction). */
+  racePredictions: {
+    /** The effort distance key: "5k", "10k", "half" or "marathon". */
+    from: string;
+    /** The effort time, as in bestEfforts. */
+    time: string;
+    date: string;
+    "5k": string;
+    "10k": string;
+    half: string;
+    marathon: string;
+  }[];
+  /** The run names with more than one session: the workouts that the workout trend compares. */
+  repeatedRuns: Record<string, number>;
+  strengthExercises: Record<string, { sessions: number; first?: TopSet; last?: TopSet }>;
+  /**
+   * The plan verdicts of the strength sessions done (a skipped session has no file and is not seen):
+   * one count per exercise per session. `weeks` by Monday: the weeks with a counted exercise, and null
+   * for a week that holds a session without sets. `mostMissed`: the first 5 exercises with a miss.
+   * Absent without a planned session.
+   */
+  strengthPlan?: {
+    sessions: number;
+    unplanned: number;
+    weeks: Record<string, { hit: number; miss: number } | null>;
+    mostMissed: PlanMiss[];
+  };
+  /**
+   * The plan verdicts of the runs whose laps the page read (a skipped run has no file and is not
+   * seen): one count per lap with a verdict. `runs` counts every run of the period, `unread` those
+   * whose laps were not read. `weeks` by Monday: the weeks with a counted lap, and null for a week
+   * with an unread run and no counted lap. `mostMissed`: the first 5 workouts and target types with a
+   * miss. Absent without a run.
+   */
+  runPlan?: {
+    runs: number;
+    untargeted: number;
+    unread: number;
+    weeks: Record<string, { hit: number; miss: number } | null>;
+    mostMissed: RunPlanMiss[];
+  };
+  /**
+   * The page's readiness verdict for today and its inputs; null when the data cannot back a value.
+   * Absent without HRV and recovery rows (also when the page leaves out the recovery data).
+   */
+  readiness?: {
+    verdict: "easy" | "normal" | "push" | null;
+    hrvStatus: string | null;
+    /** The dates of the HRV row and of the recovery row used: the last rows, of any date. */
+    hrvDate: string | null;
+    sleepScore: number | null;
+    rhr: number | null;
+    /** The mean resting HR of the 7 rows before the last, 1 decimal. */
+    rhrAvg7: number | null;
+    recoveryDate: string | null;
+    /** As load.acuteToChronic; the verdict uses the exact ratio. */
+    loadRatio: number | null;
+  };
+  /**
+   * The page's Aerobic fitness: metres per heartbeat of the runs below zone 4, the first and the
+   * last `comparedWeeks` of the period, 2 decimals; null without such a run on that side. The change
+   * in % needs 3 runs on each side. Absent without runs, and without a zone 4 floor (no zones, or
+   * zones that the settings leave out): the page's value then counts every run, not the aerobic ones.
+   */
+  aerobicEfficiency?: {
+    comparedWeeks: number;
+    first: number | null;
+    last: number | null;
+    firstRuns: number;
+    lastRuns: number;
+    changePct: number | null;
+  };
+  /**
+   * A run without zone seconds counts in the zone of its average HR in `runEasyPct` and `runHardPct`,
+   * as on the page. Absent otherwise.
+   */
+  runIntensityApproximate?: true;
+  /** Today's fitness, fatigue and form of the page, 1 decimal; null when no activity has a load. */
+  fitnessFatigue: { fitness: number; fatigue: number; form: number } | null;
+  hrvLast14: unknown[];
+  recovery: unknown;
+  fitnessAge: Json;
+  sync: unknown;
+}
+
+/**
+ * Sums and copies of a getDashboardData result, with the page's load functions, so a coach note can
+ * quote what the page shows. The long runs and the race predictions come from the page's split and
+ * Riegel functions; the readiness and fitness from the page's readiness and fitness functions. A
+ * number that the data cannot back is null (n/a); a load from the HR estimate is counted in
+ * `estimatedLoads`.
+ */
+export function digest(data: Json): Digest {
+  const acts = list(data.activities).filter((a) => dayOf(a as Activity) !== undefined);
+  const previous = list(data.previousActivities).filter((a) => dayOf(a as Activity) !== undefined);
+  const start = typeof data.start === "string" ? data.start : "";
+  const end = typeof data.end === "string" ? data.end : "";
+  // the page's load: Garmin's, else its labelled estimate from HR
+  const maxHR = zonesOf(data.zones).maxHR;
+  const loadIn = (a: Json) => loadOf(a as Activity, maxHR);
+
+  const totals: Record<string, Sum> = {};
+  const weekly: Record<string, Sum> = {};
+  for (const a of acts) {
+    const type = typeOf(a);
+    const km = num(a.km);
+    for (const s of [
+      (totals[type] ??= sum()),
+      (weekly[mondayOf(dayOf(a as Activity)!)] ??= sum()),
+    ]) {
+      add(s, km, sessionSeconds(a as Activity) / 3600, loadIn(a));
+      if (isRunning(a as Activity)) s.runKm += km;
+    }
+  }
+
+  // as many days as the period, right before it: the previous rows start a week earlier
+  const prior = start && end && start <= end ? periodWindow(start, end, undefined) : undefined;
+  // the digest has no `partial` field
+  const previousPeriod = prior ? { from: prior.from, to: prior.to } : undefined;
+  const previousPeriodTotals: Record<string, Sum> = {};
+  for (const a of previous) {
+    const day = dayOf(a as Activity)!;
+    if (previousPeriod && (day < previousPeriod.from || day > previousPeriod.to)) continue;
+    add((previousPeriodTotals[typeOf(a)] ??= sum()), num(a.km), 0, loadIn(a));
+  }
+
+  // the weeks before the period count for the 28 days, as on the page
+  const every = [...acts, ...previous] as Activity[];
+  const dataStart = typeof data.prevStart === "string" ? data.prevStart : undefined;
+  const ratio = loadRatio(every, end, maxHR, dataStart);
+  const acuteToChronic = ratio.ratio === null ? null : round(ratio.ratio, 2);
+  const loadsFrom = (from: string) =>
+    every.filter((a) => dayOf(a)! >= from && dayOf(a)! <= end).map((a) => loadOf(a, maxHR));
+  const week = loadsFrom(addDays(end, -6));
+  const month = loadsFrom(addDays(end, -27));
+  // sessions without any load: n/a, not 0; no session at all is rest, a true 0
+  const unknown = (loads: typeof week) => loads.length > 0 && loads.every((l) => l === undefined);
+
+  const bestEfforts = fastestEfforts(acts);
+
+  // the page's Long runs and Race predictor: the same functions, so the coach quotes the page
+  const runs = acts.filter((a) => groupOf(a as Activity) === "running");
+  const longRuns: Digest["longRuns"] = runs
+    .filter((a) => isLongRun(a as Activity))
+    .map((a) => {
+      const s = Array.isArray(a.laps)
+        ? splitOf(a.laps as Parameters<typeof splitOf>[0])
+        : undefined;
+      return {
+        date: dayOf(a as Activity)!,
+        name: a.name,
+        km: round(num(a.km), 1),
+        firstPace: s ? paceText(s.first) : null,
+        secondPace: s ? paceText(s.second) : null,
+        kind: s ? s.kind : null,
+        hrDriftPct: s?.drift === undefined ? null : round(s.drift, 1),
+      };
+    });
+  const weeks = start ? weeksOf(start, end) : [];
+  const floors = zonesOf(data.zones).floors;
+  const z4 = floors[3];
+  const trend = aerobicTrend(runs as Activity[], weeks, z4);
+  // the page's Intensity share and Long runs
+  const intensity =
+    runs.length > 0 ? weeklyIntensity(runs as Activity[], weeks, floors) : undefined;
+  const runWeek = (k: string) => {
+    const i = weeks.indexOf(k);
+    // the page shows no week before the period start, and a digest without a start has no weeks
+    if (!intensity || k < start || i < 0) return {};
+    const ofWeek = runs.filter((a) => weekIndex(a as Activity, weeks) === i) as Activity[];
+    return {
+      runEasyPct: r0(intensity.easy[i]),
+      runHardPct: r0(intensity.hard[i]),
+      longRunSharePct: r0(longestShare(ofWeek)),
+    };
+  };
+  // the page's Load safety
+  const safety = loadSafety(acts as Activity[], weeks, end, maxHR);
+  // a partial week before (or no week before: undefined) gives no ramp
+  const rampOf = (monday: string) => {
+    const i = weeks.indexOf(monday);
+    const r = weeks[i - 1] >= start ? safety.ramp[i] : null;
+    return r === null ? null : round(r, 1);
+  };
+  // the first one wins a tie
+  const longest = runs.reduce<Json | undefined>(
+    (top, a) => (num(a.km) > num(top?.km) ? a : top),
+    undefined,
+  );
+  const longestRun = longest
+    ? { date: dayOf(longest as Activity)!, name: longest.name, km: round(num(longest.km), 1) }
+    : undefined;
+  const swims = swimsOf(acts);
+  // the page predicts from the efforts of the runs only
+  const runEfforts = fastestEfforts(runs);
+  const racePredictions: Digest["racePredictions"] = racePredictionsOf(
+    mapValues(runEfforts, (b) => seconds(b.time)),
+  ).map((o) => {
+    const effort = runEfforts[o.from.distance];
+    return {
+      from: o.from.distance,
+      time: effort.time,
+      date: effort.date,
+      "5k": hms(o.times["5k"]),
+      "10k": hms(o.times["10k"]),
+      half: hms(o.times.half),
+      marathon: hms(o.times.marathon),
+    };
+  });
+
+  // activities come most recent first: the first top set seen is the last one done
+  const strengthExercises: Digest["strengthExercises"] = {};
+  for (const a of acts) {
+    for (const e of list(a.exercises)) {
+      if (typeof e.exercise !== "string") continue;
+      // as on the page: an exercise of only 0-rep sets was skipped
+      if (!list(e.sets).some((s) => completed(s as StrengthSet))) continue;
+      const x = (strengthExercises[e.exercise] ??= { sessions: 0 });
+      x.sessions++;
+      const top = topSet(list(e.sets));
+      if (top) {
+        const set = { date: dayOf(a as Activity)!, top };
+        x.last ??= set;
+        x.first = set;
+      }
+    }
+  }
+
+  const plan = planAdherence(acts as Activity[], weeks);
+  const strengthPlan =
+    plan.sessions > plan.unplanned
+      ? {
+          sessions: plan.sessions,
+          unplanned: plan.unplanned,
+          weeks: Object.fromEntries(
+            weeks
+              .map((w, i) => [w, plan.weeks[i]] as const)
+              .filter(([, v]) => v === null || v.hit + v.miss > 0),
+          ),
+          mostMissed: plan.exercises.slice(0, 5),
+        }
+      : undefined;
+  const lapPlan = runPlanAdherence(acts as Activity[], weeks);
+  const runPlan =
+    lapPlan.runs > 0
+      ? {
+          ...lapPlan,
+          weeks: Object.fromEntries(
+            weeks
+              .map((w, i) => [w, lapPlan.weeks[i]] as const)
+              .filter(([, v]) => v === null || v.hit + v.miss > 0),
+          ),
+          mostMissed: lapPlan.mostMissed.slice(0, 5),
+        }
+      : undefined;
+
+  // the page's readiness and fitness: the verdict from the exact ratio, only the shown values rounded
+  const hrv = list(data.hrv);
+  const recovery = list(data.recovery);
+  const ready = readinessOf(hrv, recovery, ratio.ratio);
+  // without a start (the server always gives one) fitness has no window
+  const ff = start ? fitnessFatigueFrom(every, start, end, maxHR) : null;
+
+  const age = isObject(data.fitnessAge) ? data.fitnessAge : {};
+  return {
+    period: {
+      ...pick(data, ["start", "end", "weeks", "prevStart", "prevEnd"]),
+      ...(previousPeriod ? { previousPeriod } : {}),
+    },
+    totals: mapValues(totals, (t) => roundTotals(t, true)),
+    previousPeriodTotals: mapValues(previousPeriodTotals, (t) => roundTotals(t, false)),
+    weekly: Object.fromEntries(
+      Object.entries(weekly)
+        .toSorted(([a], [b]) => (a < b ? -1 : 1))
+        // the period starts after this Monday: the week is not whole
+        .map(([k, w]) => [
+          k,
+          {
+            ...roundWeek(w, rampOf(k)),
+            ...runWeek(k),
+            ...(k < start ? { partial: true as const } : {}),
+          },
+        ]),
+    ),
+    load: {
+      last7Days: unknown(week) ? null : round(ratio.acute, 1),
+      weeklyAvgLast28Days:
+        ratio.chronic === null || unknown(month) ? null : round(ratio.chronic, 1),
+      acuteToChronic,
+      estimatedLoads: month.filter((l) => l?.estimate).length,
+      // 7 days without a known load have no spread, so no monotony: n/a
+      monotony: r2(safety.monotony),
+      strain: safety.strain === null ? null : round(safety.strain, 1),
+    },
+    bestEfforts,
+    recordProgression: mapValues(bestProgression(runs as Activity[]), (bests) =>
+      bests.map((b, i) => ({
+        date: dayOf(b.a)!,
+        time: b.time,
+        previous: i > 0 ? bests[i - 1].time : null,
+        id: b.a.id,
+        name: b.a.name,
+      })),
+    ),
+    races: acts
+      .filter((a) => a.race === true)
+      .map((a) => ({
+        date: dayOf(a as Activity),
+        ...pick(a, ["name", "km", "duration", "pace", "avgHR"]),
+      })),
+    longRuns,
+    ...(longestRun ? { longestRun } : {}),
+    ...(swims ? { swims } : {}),
+    ...(runs.length > 0 && z4 !== undefined
+      ? {
+          aerobicEfficiency: {
+            comparedWeeks: trend.n,
+            first: r2(trend.first),
+            last: r2(trend.last),
+            firstRuns: trend.firstRuns,
+            lastRuns: trend.lastRuns,
+            changePct: trend.change === null ? null : round(trend.change, 1),
+          },
+        }
+      : {}),
+    ...(intensity?.approximate ? { runIntensityApproximate: true as const } : {}),
+    racePredictions,
+    repeatedRuns: repeatedRuns(acts),
+    strengthExercises,
+    ...(strengthPlan ? { strengthPlan } : {}),
+    ...(runPlan ? { runPlan } : {}),
+    ...(hrv.length > 0 || recovery.length > 0
+      ? {
+          readiness: {
+            verdict: ready.verdict,
+            hrvStatus: ready.hrvStatus ?? null,
+            hrvDate: ready.hrvDate ?? null,
+            sleepScore: ready.sleepScore ?? null,
+            rhr: ready.rhr ?? null,
+            rhrAvg7: ready.rhrAvg === undefined ? null : round(ready.rhrAvg, 1),
+            recoveryDate: ready.recoveryDate ?? null,
+            loadRatio: acuteToChronic,
+          },
+        }
+      : {}),
+    fitnessFatigue: ff && {
+      fitness: round(ff.fitness.at(-1)!, 1),
+      fatigue: round(ff.fatigue.at(-1)!, 1),
+      form: round(ff.form.at(-1)!, 1),
+    },
+    hrvLast14: hrv.slice(-14),
+    // the digest stays small: a page can have a year of rows
+    recovery: Array.isArray(data.recovery) ? data.recovery.slice(-14) : data.recovery,
+    fitnessAge: pick(age, ["fitnessAge", "chronologicalAge", "achievableFitnessAge"]),
+    sync: data.sync,
+  };
+}
+
+/** The number of runs of each workout (the run name without its place) that has more than one, most first. */
+function repeatedRuns(acts: Json[]): Record<string, number> {
+  const count = new Map<string, number>();
+  for (const a of acts) {
+    if (isRunning(a as Activity) && typeof a.name === "string") {
+      const w = workoutOf(a.name);
+      count.set(w, (count.get(w) ?? 0) + 1);
+    }
+  }
+  return Object.fromEntries([...count].filter(([, n]) => n > 1).toSorted((x, y) => y[1] - x[1]));
+}
+
+/** The page's top set, as "70 kg x 6"; undefined for sets without weight. */
+function topSet(sets: Json[]): string | undefined {
+  const top = pageTopSet(sets as StrengthSet[]);
+  return top ? `${top.kg} kg x ${top.reps}` : undefined;
+}
+
+/** The fastest effort of each distance, with its activity. */
+const RECENT_SWIMS = 8;
+const openWater = (a: Activity) => String(a.type ?? "").includes("open_water");
+const numberOrNull = (v: unknown) => (typeof v === "number" ? v : null);
+
+function swimsOf(acts: Json[]): Swims | undefined {
+  const swims = (acts as Activity[]).filter((a) => groupOf(a) === "swimming" && dayOf(a));
+  if (swims.length === 0) return undefined;
+  const weekly: Swims["weekly"] = {};
+  for (const a of swims) {
+    const w = (weekly[mondayOf(dayOf(a)!)] ??= { sessions: 0, km: null });
+    w.sessions++;
+    if (typeof a.km === "number") w.km = round((w.km ?? 0) + a.km, 2);
+  }
+  const longest = swims
+    .filter((a) => typeof a.km === "number")
+    .reduce<Activity | undefined>((top, a) => (a.km! > (top?.km ?? 0) ? a : top), undefined);
+  const trend = swimTrend(swims);
+  const w = trend?.window;
+  return {
+    weekly,
+    longest: longest
+      ? {
+          date: dayOf(longest)!,
+          name: longest.name,
+          km: round(longest.km!, 2),
+          openWater: openWater(longest),
+        }
+      : null,
+    recent: swims
+      .toSorted((x, y) => dayOf(y)!.localeCompare(dayOf(x)!))
+      .slice(0, RECENT_SWIMS)
+      .map((a) => {
+        const pace = swimPace(a);
+        const perLength = strokesPerLength(a);
+        return {
+          date: dayOf(a)!,
+          name: a.name,
+          openWater: openWater(a),
+          km: numberOrNull(a.km),
+          pace: pace === undefined ? null : swimPaceText(pace),
+          swolf: numberOrNull(a.swolf),
+          strokesPerLength: perLength === undefined ? null : round(perLength, 1),
+          poolLengthM: numberOrNull(a.poolLengthM),
+        };
+      }),
+    poolTrend: trend
+      ? {
+          poolLengthM: trend.poolLengthM,
+          swims: trend.sessions.length,
+          from: trend.sessions[0].date,
+          left: trend.left,
+          comparedSwims: w?.swims ?? null,
+          pace: w
+            ? { recent: swimPaceText(w.pace.recent), before: swimPaceText(w.pace.before) }
+            : null,
+          strokesPerLength: w
+            ? { recent: round(w.strokes.recent, 1), before: round(w.strokes.before, 1) }
+            : null,
+        }
+      : null,
+  };
+}
+
+/** The last of each progression: the fastest, and the first run of a tie, as on the page. */
+function fastestEfforts(acts: Json[]): Digest["bestEfforts"] {
+  return mapValues(bestProgression(acts as Activity[]), (bests) => {
+    const { time, a } = bests.at(-1)!;
+    return { time, date: dayOf(a)!, name: a.name };
+  });
+}
+
+/** An efficiency to 2 decimals; null stays null. */
+const r0 = (v: number | null) => (v === null ? null : round(v, 0));
+const r2 = (v: number | null) => (v === null ? null : round(v, 2));
+
+function sum(): Sum {
+  return { sessions: 0, km: 0, runKm: 0, hours: 0, load: 0, known: 0, estimated: 0 };
+}
+
+function add(s: Sum, km: number, hours: number, load: ReturnType<typeof loadOf>): void {
+  s.sessions++;
+  s.km += km;
+  s.hours += hours;
+  if (load) {
+    s.load += load.value;
+    s.known++;
+    if (load.estimate) s.estimated++;
+  }
+}
+
+/** The load of sessions that all lack one is n/a; the count of estimates only when there are some. */
+function loadPart(s: Sum): Pick<Totals, "load" | "estimatedLoads"> {
+  return {
+    load: s.known > 0 ? round(s.load, 1) : null,
+    ...(s.estimated > 0 ? { estimatedLoads: s.estimated } : {}),
+  };
+}
+
+function roundWeek(w: Sum, rampPct: number | null): Week {
+  return {
+    sessions: w.sessions,
+    km: round(w.km, 1),
+    runKm: round(w.runKm, 1),
+    hours: round(w.hours, 1),
+    ...loadPart(w),
+    rampPct,
+  };
+}
+
+/** Rounded to 0.1; no km for types without distance (strength, racket sports). */
+function roundTotals(t: Sum, hours: boolean): Totals {
+  return {
+    sessions: t.sessions,
+    ...(t.km ? { km: round(t.km, 1) } : {}),
+    ...(hours ? { hours: round(t.hours, 1) } : {}),
+    ...loadPart(t),
+  };
+}
+
+function typeOf(a: Json): string {
+  return typeof a.type === "string" ? a.type : "other";
+}
+
+/** What an update could not fetch, for a log line; undefined when it got everything. */
+export function syncGaps(sync: unknown): string | undefined {
+  if (!isObject(sync)) return undefined;
+  const sections = Array.isArray(sync.failedSections) ? sync.failedSections : [];
+  const gaps = [
+    num(sync.failedDays) > 0 ? `days: ${num(sync.failedDays)}` : "",
+    sections.length > 0 ? `sections: ${sections.join(", ")}` : "",
+    num(sync.failedDetails) > 0 ? `session details: ${num(sync.failedDetails)}` : "",
+    sync.stoppedEarly === true ? "Garmin stopped answering" : "",
+  ].filter(Boolean);
+  return gaps.length > 0 ? gaps.join("; ") : undefined;
+}
+
+function num(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+function list(v: unknown): Json[] {
+  return Array.isArray(v) ? v.filter(isObject) : [];
+}
+
+function pick(o: Json, keys: string[]): Json {
+  return Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
+}
+
+function mapValues<T, U>(o: Record<string, T>, f: (v: T) => U): Record<string, U> {
+  return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, f(v)]));
+}
+
+function isObject(v: unknown): v is Json {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}

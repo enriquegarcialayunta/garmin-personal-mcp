@@ -1,0 +1,490 @@
+import { readFileSync } from "node:fs";
+import type { McpServer } from "@modelcontextprotocol/server";
+import * as z from "zod/v4";
+import { addDays, localToday } from "./dates";
+import { hms, swimPaceText } from "./fit";
+import { mondayOf } from "./analytics/calc";
+import { BUILT_IN } from "./page/i18n/built-in";
+import { en } from "./page/i18n/en";
+import { THEMES } from "./page/theme";
+
+/**
+ * MCP prompts: ready-made instructions the client shows in its prompt menu (e.g. Claude Desktop "+").
+ * The texts live in prompts/*.md and use {{placeholder}} markers, filled in one pass: a value goes in as it is.
+ */
+
+const DEFAULT_WEEKS = 12;
+const MAX_WEEKS = 52;
+/** Version of the dashboard data contract, written into each page as `v`. */
+export const DASHBOARD_VERSION = 3;
+
+/** prompts/ sits next to dist/ in the package and next to src/ in the repo. */
+const load = (name: string) => readFileSync(new URL(`../prompts/${name}`, import.meta.url), "utf8");
+
+export function registerPrompts(server: McpServer): void {
+  const build = load("training-dashboard.md");
+  const freeform = load("training-dashboard-freeform.md");
+  const update = load("training-dashboard-update.md");
+  const widgetPrompt = load("dashboard-widget.md");
+  const languagePrompt = load("dashboard-language.md");
+  const setupPrompt = load("dashboard-setup.md");
+  const reviewPrompt = load("run-review.md");
+  const readinessPrompt = load("race-readiness.md");
+  const strengthPrompt = load("strength-review.md");
+  const swimReviewPrompt = load("swim-review.md");
+  const swimReadinessPrompt = load("swim-readiness.md");
+  const rideReviewPrompt = load("ride-review.md");
+  const trainPrompt = load("train-today.md");
+  const weekPrompt = load("week-review.md");
+
+  const dashboardDescription =
+    "Build a personal training + recovery dashboard (volume, load, HRV, sleep) from Garmin data";
+  server.registerPrompt(
+    "training-dashboard",
+    {
+      description: dashboardDescription,
+      argsSchema: z.object({
+        weeks: z.string().describe(`Number of weeks to cover, default ${DEFAULT_WEEKS}`).optional(),
+        layout: z
+          .string()
+          .describe(
+            "preset (default): the built-in widgets; blank: an empty grid; freeform: the assistant designs the whole page",
+          )
+          .optional(),
+      }),
+    },
+    (args) => {
+      const w = weeks(args.weeks);
+      // Claude Code passes arguments by position: a layout given alone arrives in weeks
+      const layout = layoutOf(arg(args.layout) === "" ? args.weeks : args.layout);
+      const text =
+        layout === "freeform"
+          ? renderDashboard(freeform, w)
+          : render(renderDashboard(build, w), {
+              layout,
+              title: en.title,
+              headline: en.headline,
+              builtIn: Object.keys(BUILT_IN)
+                .map((code) => `${languageName(code)} (${code})`)
+                .join(", "),
+              layoutNote:
+                layout === "blank"
+                  ? '\nThe page is an empty grid: tell me to add widgets with "Edit layout" and "Add widget".'
+                  : "",
+            });
+      return result(dashboardDescription, text);
+    },
+  );
+
+  const updateDescription =
+    "Update the training dashboard with the new Garmin data; it keeps the layout, widgets and languages";
+  server.registerPrompt(
+    "training-dashboard-update",
+    {
+      description: updateDescription,
+      argsSchema: z.object({
+        weeks: z
+          .string()
+          .describe("Weeks to cover; empty = keep the weeks of the dashboard")
+          .optional(),
+        path: PATH_ARG,
+      }),
+    },
+    (args) => {
+      // Claude Code passes arguments by position: the file given alone arrives in weeks
+      const path = pathOf(args.path, args.weeks);
+      const keepWeeks = arg(args.weeks) === "" || /\.html$/i.test(arg(args.weeks));
+      return result(
+        updateDescription,
+        render(update, {
+          today: localToday(),
+          weeksArgument: keepWeeks
+            ? "no `weeks` (the page keeps its weeks)"
+            : `\`weeks\` = ${weeks(args.weeks)}`,
+          pathArgument: pathPart(path),
+          pathWith: pathWith(path),
+        }),
+      );
+    },
+  );
+
+  const widgetDescription = "Make a new widget for the training dashboard from your idea";
+  server.registerPrompt(
+    "dashboard-widget",
+    {
+      description: widgetDescription,
+      argsSchema: z.object({
+        idea: z.string().describe("What the widget shows, e.g. my longest ride each month"),
+        path: PATH_ARG,
+      }),
+    },
+    (args) => {
+      // Claude Code splits the text by position: join the slots, a last word ending in .html is the file
+      const words = [arg(args.idea), arg(args.path)].filter(Boolean).join(" ");
+      const m = /^(.*?)\s*(\S+\.html)$/i.exec(words);
+      const named = arg(args.path);
+      const keepNamed = !m && named !== "" && !/\s/.test(named);
+      const path = m ? m[2] : keepNamed ? named : "";
+      const idea = m ? m[1] : keepNamed ? arg(args.idea) : words;
+      return result(
+        widgetDescription,
+        render(widgetPrompt, { idea, pathArgument: pathPart(path), pathWith: pathWith(path) }),
+      );
+    },
+  );
+
+  const setupDescription =
+    "Set up a dashboard: title, sports, the data it shows (e.g. for a coach), languages, themes, file";
+  server.registerPrompt(
+    "dashboard-setup",
+    {
+      description: setupDescription,
+      argsSchema: z.object({
+        weeks: z.string().describe(`Number of weeks to cover, default ${DEFAULT_WEEKS}`).optional(),
+      }),
+    },
+    (args) =>
+      result(
+        setupDescription,
+        render(setupPrompt, {
+          weeks: String(weeks(args.weeks)),
+          today: localToday(),
+          title: en.title,
+          headline: en.headline,
+          languages: ["en", ...Object.keys(BUILT_IN)].join(", "),
+          languageNames: new Intl.ListFormat("en").format([
+            "English",
+            ...Object.keys(BUILT_IN).map(languageName),
+          ]),
+          themes: THEMES.map((t) => t.id).join(", "),
+        }),
+      ),
+  );
+
+  const languageDescription =
+    "Add a language to the training dashboard (the assistant translates its texts)";
+  server.registerPrompt(
+    "dashboard-language",
+    {
+      description: languageDescription,
+      argsSchema: z.object({
+        language: z
+          .string()
+          .describe("The language, e.g. German; empty = the language of this chat")
+          .optional(),
+        path: PATH_ARG,
+      }),
+    },
+    (args) => {
+      // Claude Code passes arguments by position: the file given alone arrives in language
+      const path = pathOf(args.path, args.language);
+      const language = /\.html$/i.test(arg(args.language)) ? "" : arg(args.language);
+      return result(
+        languageDescription,
+        render(languagePrompt, {
+          language: language || "my language (the language of this chat)",
+          builtIn: Object.keys(BUILT_IN)
+            .map((code) => `${languageName(code)} (${code})`)
+            .join(", "),
+          pathArgument: pathPart(path),
+          pathWith: pathWith(path),
+        }),
+      );
+    },
+  );
+
+  const reviewDescription =
+    "Review a run as a coach: planned workout against the laps, rep fade, HR drift, recovery";
+  server.registerPrompt(
+    "run-review",
+    {
+      description: reviewDescription,
+      argsSchema: z.object({
+        activity: z
+          .string()
+          .describe("An activity id, or words of its name; empty = the latest run")
+          .optional(),
+      }),
+    },
+    (args) => {
+      const find = findActivity(arg(args.activity), "run", "runs", "a type that ends in `running`");
+      return result(reviewDescription, render(reviewPrompt, { today: localToday(), find }));
+    },
+  );
+
+  const strengthDescription =
+    "Review a strength session as a coach: planned sets against done, top sets, rest, recovery";
+  server.registerPrompt(
+    "strength-review",
+    {
+      description: strengthDescription,
+      argsSchema: z.object({
+        activity: z
+          .string()
+          .describe("An activity id, or words of its name; empty = the latest strength session")
+          .optional(),
+      }),
+    },
+    (args) => {
+      const find = findActivity(
+        arg(args.activity),
+        "strength session",
+        "strength sessions",
+        "a type that contains `strength`",
+      );
+      return result(strengthDescription, render(strengthPrompt, { today: localToday(), find }));
+    },
+  );
+
+  const readinessDescription =
+    "Check if you are ready for a race: training block, taper, predicted time, recovery, race plan";
+  server.registerPrompt(
+    "race-readiness",
+    {
+      description: readinessDescription,
+      argsSchema: z.object({
+        date: z.string().describe("The race date, yyyy-MM-dd").optional(),
+        distance: z.string().describe("5k, 10k, half, marathon, or a distance in km").optional(),
+        goal: z.string().describe("Your goal time, e.g. 1:45:00; empty = no goal").optional(),
+      }),
+    },
+    (args) => {
+      // Claude Code passes arguments by position: read the date and the time by their shape from any slot
+      const words = [args.date, args.distance, args.goal].map(arg).join(" ").split(/\s+/);
+      const date = words.find((w) => /^\d{4}-\d{2}-\d{2}$/.test(w)) ?? "";
+      const goal = words.find((w) => /^\d{1,2}:\d{2}(:\d{2})?$/.test(w)) ?? "";
+      const distance = words.filter((w) => w && w !== date && w !== goal).join(" ");
+      return result(
+        readinessDescription,
+        render(readinessPrompt, {
+          today: localToday(),
+          race: `${distance || "distance not given"} on ${date || "a date not given"}${goal ? `, goal time ${goal}` : ""}`,
+          missing:
+            date && distance
+              ? ""
+              : "The race date or distance is missing: ask me for it before you call a tool.\n",
+          goalLine: goal
+            ? `Compare it with my goal time of ${goal}: the gap, and whether the goal is realistic.`
+            : "I have no goal time: give the prediction only.",
+          planFrom: goal
+            ? "from the goal time when it is realistic, else from the prediction"
+            : "from the prediction",
+        }),
+      );
+    },
+  );
+
+  const swimReviewDescription =
+    "Review a swim as a coach: planned workout against the laps, set fade, SWOLF and strokes, recovery";
+  server.registerPrompt(
+    "swim-review",
+    {
+      description: swimReviewDescription,
+      argsSchema: z.object({
+        activity: z
+          .string()
+          .describe("An activity id, or words of its name; empty = the latest swim")
+          .optional(),
+      }),
+    },
+    (args) => {
+      const find = findActivity(
+        arg(args.activity),
+        "swim",
+        "swims",
+        "a type that contains `swimming`",
+      );
+      return result(swimReviewDescription, render(swimReviewPrompt, { today: localToday(), find }));
+    },
+  );
+
+  const rideReviewDescription =
+    "Review a ride as a coach: speed, climbing, power, grit and flow, the same route before, recovery";
+  server.registerPrompt(
+    "ride-review",
+    {
+      description: rideReviewDescription,
+      argsSchema: z.object({
+        activity: z
+          .string()
+          .describe("An activity id, or words of its name; empty = the latest ride")
+          .optional(),
+      }),
+    },
+    (args) => {
+      const find = findActivity(arg(args.activity), "ride", "rides", "`sport` = `cycling`");
+      return result(rideReviewDescription, render(rideReviewPrompt, { today: localToday(), find }));
+    },
+  );
+
+  const swimReadinessDescription =
+    "Check if you are ready for a swim event: training block, longest swim, pace, CSS, recovery";
+  server.registerPrompt(
+    "swim-readiness",
+    {
+      description: swimReadinessDescription,
+      argsSchema: z.object({
+        date: z.string().describe("The event date, yyyy-MM-dd").optional(),
+        distance: z.string().describe("The event distance, e.g. 1.9 km").optional(),
+        tests: z
+          .string()
+          .describe("Your 200 m and 400 m test times, e.g. 3:10 6:40; empty = no CSS")
+          .optional(),
+      }),
+    },
+    (args) => {
+      // Claude Code passes arguments by position: read the date and the times by their shape from any slot
+      // "3:10, 6:40" is two times; the comma of "1,9 km" stays
+      const words = [args.date, args.distance, args.tests]
+        .map(arg)
+        .join(" ")
+        .replace(/(:\d{2}),\s*/g, "$1 ")
+        .split(/\s+/);
+      const date = words.find((w) => /^\d{4}-\d{2}-\d{2}$/.test(w)) ?? "";
+      const times = words.filter((w) => TEST_TIME.test(w));
+      const distance = words.filter((w) => w && w !== date && !times.includes(w)).join(" ");
+      return result(
+        swimReadinessDescription,
+        render(swimReadinessPrompt, {
+          today: localToday(),
+          event: `${distance || "distance not given"} on ${date || "a date not given"}`,
+          missing:
+            date && distance
+              ? ""
+              : "The event date or distance is missing: ask me for it before you call a tool.\n",
+          css: cssLine(times),
+        }),
+      );
+    },
+  );
+
+  const trainDescription =
+    "Tell if you should train hard today: the dashboard's readiness verdict, its inputs, fitness and form";
+  server.registerPrompt("train-today", { description: trainDescription }, () =>
+    result(trainDescription, render(trainPrompt, { today: localToday() })),
+  );
+
+  const weekDescription =
+    "Review the last whole training week against the weeks before: sessions, hours, km, load and form";
+  server.registerPrompt("week-review", { description: weekDescription }, () => {
+    const today = localToday();
+    return result(
+      weekDescription,
+      render(weekPrompt, { today, week: addDays(mondayOf(today), -7) }),
+    );
+  });
+}
+
+/** A swim test time, m:ss. */
+const TEST_TIME = /^\d{1,2}:[0-5]\d$/;
+
+const seconds = (time: string) => {
+  const [m, s] = time.split(":").map(Number);
+  return m * 60 + s;
+};
+
+/**
+ * The CSS part of the swim check. CSS is computed here, never by the assistant: (400 m time - 200 m time) / 2
+ * per 100 m. The larger time is the 400 m. A time of zero, or a 400 m at or under twice the 200 m, is not a valid test.
+ */
+function cssLine(times: string[]): string {
+  const none = `show "n/a". CSS needs one 200 m time and one 400 m time from all-out swims on one day. Do not estimate it from my swims.`;
+  if (times.length === 0) return `I gave no test times: ${none}`;
+  if (times.length !== 2) return `I gave ${times.join(", ")}, not 2 test times: ${none}`;
+  const [t200, t400] = times.map(seconds).toSorted((a, b) => a - b);
+  const given = `My test times are ${hms(t200)} for 200 m and ${hms(t400)} for 400 m.`;
+  if (t200 === 0 || 2 * t200 >= t400)
+    return `${given} No time can be 0:00 and the 400 m must be slower per 100 m than the 200 m, so the test is not valid: show "n/a" and tell me to repeat it.`;
+  return `${given} CSS = (400 m time - 200 m time) / 2 = ${swimPaceText((t400 - t200) / 2)}. Quote this value: it is the pace I can hold over a long set, from this test only. Do not turn it into an event time.`;
+}
+
+/**
+ * The step that finds the activity of a review: by id, by words of its name (the slash command can pass
+ * only the first word, so the name may be cut), or the latest one of its kind.
+ */
+function findActivity(activity: string, one: string, many: string, type: string): string {
+  if (/^\d+$/.test(activity))
+    return `The ${one} is the activity with \`activityId\` = ${activity}.`;
+  return activity
+    ? // the tool filters names in the newest 200 activities of the window and gives 20 rows: a full list may hide older ones
+      `Call \`listActivities\` with \`names\` = ${JSON.stringify([activity])}, and keep the ${many} (${type}). My words can be only the start of the name: when the ${many} have more than one name, list the 5 most recent with date and name and ask me which one. Then take the most recent ${one} of that name. When no row is a ${one} and the list has 20 rows, call it again with \`endDate\` = the day of the oldest row, at most 5 calls in all. When no row is a ${one} and the last list has fewer than 20 rows, say that none of my activities with that name is a ${one}, and stop. After 5 calls without one, say that none of my last 100 activities with that name is a ${one}, and stop.`
+    : // 100 activities answer about 55,000 characters, over a client's tool output limit: page by 20,
+      // and stop after 5 pages: a user without such an activity must not page through all history
+      `Call \`listActivities\` and take the most recent ${one} (${type}). When none of them is one, call it again with \`endDate\` = the day of the oldest activity in the list, at most 5 calls in all. When none of them has one, say that none of my last 100 activities is a ${one}, and stop.`;
+}
+
+function renderDashboard(template: string, w: number): string {
+  const today = localToday();
+  const start = mondayOf(addDays(today, -7 * w));
+  return render(template, {
+    dashboardVersion: String(DASHBOARD_VERSION),
+    weeks: String(w),
+    today,
+    startDate: start,
+    // one extra week: the dashboard shows whole Monday-Sunday weeks, one more than asked when today is mid-week
+    prevStartDate: addDays(start, -7 * (w + 1)),
+    prevEndDate: addDays(start, -1),
+  });
+}
+
+function result(description: string, text: string) {
+  return {
+    description,
+    messages: [{ role: "user" as const, content: { type: "text" as const, text } }],
+  };
+}
+
+/** Fills each {{key}} of `values` once; a value goes in as it is, and other markers stay for a later call. */
+function render(template: string, values: Record<string, string>): string {
+  return template.replace(/\{\{(\w+)\}\}/g, (marker, key: string) =>
+    Object.hasOwn(values, key) ? values[key] : marker,
+  );
+}
+
+/** A language code by its English name, e.g. Italian for it. */
+const languageName = (code: string) =>
+  new Intl.DisplayNames(["en"], { type: "language" }).of(code) ?? code;
+
+/** The argument without whitespace or control characters at either end; "" when missing. */
+function arg(v: string | undefined): string {
+  // oxlint-disable-next-line no-control-regex -- the control characters are what is stripped
+  return (v ?? "").replace(/^[\s\u0000-\u001f]+|[\s\u0000-\u001f]+$/g, "");
+}
+
+/** The layout argument: preset (the default), blank or freeform. */
+function layoutOf(v: string | undefined): "preset" | "blank" | "freeform" {
+  const s = arg(v).toLowerCase();
+  return s === "blank" || s === "freeform" ? s : "preset";
+}
+
+const PATH_ARG = z
+  .string()
+  .describe("The dashboard file, e.g. garmin-dashboard-coach.html; empty = the default page")
+  .optional();
+
+/**
+ * The page file: the `path` argument as given, else a positional argument ending in .html
+ * (Claude Code passes arguments by position, so a file given alone arrives in the first slot).
+ */
+function pathOf(path: string | undefined, positional: string | undefined): string {
+  return arg(path) || (/\.html$/i.test(arg(positional)) ? arg(positional) : "");
+}
+
+/** The text that adds the page file after a "with ..." clause. */
+function pathPart(path: string): string {
+  return path ? ` and \`path\` = "${path}"` : "";
+}
+
+/** The text that adds the page file as its own "with ..." clause. */
+function pathWith(path: string): string {
+  return path ? ` with \`path\` = "${path}"` : "";
+}
+
+/** weeks clamped to 1..52; the default when empty or not a whole number. */
+function weeks(v: string | undefined): number {
+  const s = arg(v);
+  if (!/^[+-]?\d+$/.test(s)) {
+    return DEFAULT_WEEKS;
+  }
+  return Math.min(Math.max(Number(s), 1), MAX_WEEKS);
+}
